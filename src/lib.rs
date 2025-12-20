@@ -680,21 +680,13 @@ fn umul192_upper64_inexact_to_odd(x_hi: u64, x_lo: u64, y: u64) -> u64 {
     hi | u64::from((lo >> 1) != 0)
 }
 
-struct DivmodResult {
-    div: u32,
-    r#mod: u32,
-}
-
 // Returns {value / 100, value % 100} correct for values of up to 4 digits.
-fn divmod100(value: u32) -> DivmodResult {
+fn divmod100(value: u32) -> (u32, u32) {
     debug_assert!(value < 10_000);
     const EXP: u32 = 19; // 19 is faster or equal to 12 even for 3 digits.
     const SIG: u32 = (1 << EXP) / 100 + 1;
     let div = (value * SIG) >> EXP; // value / 100
-    DivmodResult {
-        div,
-        r#mod: value - div * 100,
-    }
+    (div, value - div * 100)
 }
 
 fn count_trailing_nonzeros(x: u64) -> usize {
@@ -761,8 +753,8 @@ unsafe fn write_significand(mut buffer: *mut u8, value: u64) -> *mut u8 {
     let ddee = abbccddee % 10_000;
     let abb = abbcc / 100;
     let cc = abbcc % 100;
-    let DivmodResult { div: a, r#mod: bb } = divmod100(abb);
-    let DivmodResult { div: dd, r#mod: ee } = divmod100(ddee);
+    let (a, bb) = divmod100(abb);
+    let (dd, ee) = divmod100(ddee);
 
     unsafe {
         buffer.write(b'0' + a as u8);
@@ -783,8 +775,8 @@ unsafe fn write_significand(mut buffer: *mut u8, value: u64) -> *mut u8 {
     buffer = unsafe { buffer.add(8) };
     let ffgg = ffgghhii / 10_000;
     let hhii = ffgghhii % 10_000;
-    let DivmodResult { div: ff, r#mod: gg } = divmod100(ffgg);
-    let DivmodResult { div: hh, r#mod: ii } = divmod100(hhii);
+    let (ff, gg) = divmod100(ffgg);
+    let (hh, ii) = divmod100(hhii);
     let digits = digits8_u64(ff, gg, hh, ii);
     unsafe {
         buffer.cast::<u64>().write_unaligned(digits);
@@ -816,7 +808,7 @@ unsafe fn write(mut buffer: *mut u8, dec_sig: u64, mut dec_exp: i32) -> *mut u8 
         buffer.write(sign);
         buffer = buffer.add(1);
     }
-    let DivmodResult { div: a, r#mod: bb } = divmod100(dec_exp.cast_unsigned());
+    let (a, bb) = divmod100(dec_exp.cast_unsigned());
     unsafe {
         buffer.write(b'0' + a as u8);
         buffer = buffer.add(usize::from(dec_exp >= 100));
