@@ -11,6 +11,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::items_after_statements,
+    clippy::too_many_lines,
     clippy::unreadable_literal
 )]
 
