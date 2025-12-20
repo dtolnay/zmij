@@ -713,7 +713,7 @@ fn count_trailing_nonzeros(x: u64) -> usize {
 
 // Converts value in the range [0, 100) to a string. GCC generates a bit better
 // code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
-fn digits2(value: usize) -> *const u8 {
+unsafe fn digits2(value: usize) -> *const u8 {
     // Align data since unaligned access may be slower when crossing a
     // hardware-specific boundary.
     #[repr(align(2))]
@@ -727,19 +727,24 @@ fn digits2(value: usize) -> *const u8 {
            8081828384858687888990919293949596979899",
     );
 
+    debug_assert!(value < 100);
     unsafe { DATA.0.as_ptr().add(value * 2) }
 }
 
-fn digits2_u64(value: u32) -> u64 {
-    #[allow(clippy::cast_ptr_alignment)]
-    let digits = digits2(value as usize).cast::<u16>();
-    u64::from(unsafe { digits.read() })
+unsafe fn digits2_u64(value: u32) -> u64 {
+    unsafe {
+        #[allow(clippy::cast_ptr_alignment)]
+        let digits = digits2(value as usize).cast::<u16>();
+        u64::from(digits.read())
+    }
 }
 
 // Converts the value `aa * 10**6 + bb * 10**4 + cc * 10**2 + dd` to a string
 // returned as a 64-bit integer.
-fn digits8_u64(aa: u32, bb: u32, cc: u32, dd: u32) -> u64 {
-    digits2_u64(dd) << 48 | digits2_u64(cc) << 32 | digits2_u64(bb) << 16 | digits2_u64(aa)
+unsafe fn digits8_u64(aa: u32, bb: u32, cc: u32, dd: u32) -> u64 {
+    unsafe {
+        digits2_u64(dd) << 48 | digits2_u64(cc) << 32 | digits2_u64(bb) << 16 | digits2_u64(aa)
+    }
 }
 
 // Writes a significand consisting of 16 or 17 decimal digits and removes
@@ -764,7 +769,7 @@ unsafe fn write_significand(mut buffer: *mut u8, value: u64) -> *mut u8 {
     // Use an intermediate u64 to make sure that the compiler constructs the
     // value in a register. This way the buffer is written to memory in one go
     // and count_trailing_nonzeros doesn't have to load from memory.
-    let digits = digits8_u64(bb, cc, dd, ee);
+    let digits = unsafe { digits8_u64(bb, cc, dd, ee) };
     unsafe {
         buffer.cast::<u64>().write_unaligned(digits);
     }
@@ -777,8 +782,8 @@ unsafe fn write_significand(mut buffer: *mut u8, value: u64) -> *mut u8 {
     let hhii = ffgghhii % 10_000;
     let (ff, gg) = divmod100(ffgg);
     let (hh, ii) = divmod100(hhii);
-    let digits = digits8_u64(ff, gg, hh, ii);
     unsafe {
+        let digits = digits8_u64(ff, gg, hh, ii);
         buffer.cast::<u64>().write_unaligned(digits);
         buffer.add(count_trailing_nonzeros(digits))
     }
