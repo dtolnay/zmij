@@ -811,7 +811,7 @@ unsafe fn write(mut buffer: *mut u8, dec_sig: u64, mut dec_exp: i32) {
         buffer.write(sign);
         buffer = buffer.add(1);
     }
-    let DivmodResult { div: a, r#mod: bb } = divmod100(dec_exp as u32);
+    let DivmodResult { div: a, r#mod: bb } = divmod100(dec_exp.cast_unsigned());
     unsafe {
         buffer.write(b'0' + a as u8);
         buffer = buffer.add(usize::from(dec_exp >= 100));
