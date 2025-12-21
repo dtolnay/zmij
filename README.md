@@ -13,8 +13,6 @@ implementation in C++, [https://github.com/vitaut/zmij][upstream].
 
 [upstream]: https://github.com/vitaut/zmij/tree/bbb435b5ca35f4f3ece4b3a4b87452daa8a4206c
 
-<br>
-
 ## Example
 
 ```rust
@@ -24,6 +22,10 @@ fn main() {
     assert_eq!(printed, "1.234");
 }
 ```
+
+## Performance (lower is better)
+
+![performance](https://raw.githubusercontent.com/dtolnay/zmij/master/performance.png)
 
 <br>
 

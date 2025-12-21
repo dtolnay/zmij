@@ -6,7 +6,7 @@ categories = ["value-formatting", "no-std", "no-std::no-alloc"]
 description = "A double-to-string conversion algorithm based on Schubfach and yy"
 documentation = "https://docs.rs/zmij"
 edition = "2024"
-exclude = ["chart/**"]
+exclude = ["performance.png", "chart/**"]
 license = "MIT"
 
 [dev-dependencies]

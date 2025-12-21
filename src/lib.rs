@@ -13,6 +13,12 @@
 //!
 //! [Schubfach]: https://fmt.dev/papers/Schubfach4.pdf
 //! [yy]: https://github.com/ibireme/c_numconv_benchmark/blob/master/vendor/yy_double/yy_double.c
+//!
+//! <br>
+//!
+//! ## Performance (lower is better)
+//!
+//! ![performance](https://raw.githubusercontent.com/dtolnay/zmij/master/performance.png)
 
 #![no_std]
 #![doc(html_root_url = "https://docs.rs/zmij/0.1.0")]
