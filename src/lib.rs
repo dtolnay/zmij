@@ -9,6 +9,7 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(
+    clippy::blocks_in_conditions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::items_after_statements,
