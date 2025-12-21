@@ -955,7 +955,9 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
         if bin_sig == 0 {
             return unsafe {
                 *buffer = b'0';
-                buffer.add(1)
+                *buffer.add(1) = b'.';
+                *buffer.add(2) = b'0';
+                buffer.add(3)
             };
         }
         // Handle subnormals.
