@@ -13,6 +13,14 @@ fn do_bench(c: &mut Criterion, group_name: &str, float: f64) {
             hint::black_box(formatted);
         });
     });
+    group.bench_function("ryu", |b| {
+        let mut buf = ryu::Buffer::new();
+        b.iter(move || {
+            let float = hint::black_box(float);
+            let formatted = buf.format_finite(float);
+            hint::black_box(formatted);
+        });
+    });
     group.bench_function("std::fmt", |b| {
         let mut buf = Vec::with_capacity(20);
         b.iter(|| {

@@ -10,6 +10,7 @@ license = "MIT"
 
 [target.'cfg(not(miri))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false }
+ryu = "1"
 
 [[bench]]
 name = "bench"
