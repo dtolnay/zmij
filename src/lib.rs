@@ -16,6 +16,18 @@
 //!
 //! <br>
 //!
+//! # Example
+//!
+//! ```
+//! fn main() {
+//!     let mut buffer = zmij::Buffer::new();
+//!     let printed = buffer.format(1.234);
+//!     assert_eq!(printed, "1.234");
+//! }
+//! ```
+//!
+//! <br>
+//!
 //! ## Performance (lower is better)
 //!
 //! ![performance](https://raw.githubusercontent.com/dtolnay/zmij/master/performance.png)
@@ -1034,17 +1046,39 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
     }
 }
 
+/// Safe API for formatting floating point numbers to text.
+///
+/// ## Example
+///
+/// ```
+/// let mut buffer = zmij::Buffer::new();
+/// let printed = buffer.format_finite(1.234);
+/// assert_eq!(printed, "1.234");
+/// ```
 pub struct Buffer {
     bytes: [MaybeUninit<u8>; BUFFER_SIZE],
 }
 
 impl Buffer {
+    /// This is a cheap operation; you don't need to worry about reusing buffers
+    /// for efficiency.
     #[inline]
     pub fn new() -> Self {
         let bytes = [MaybeUninit::<u8>::uninit(); BUFFER_SIZE];
         Buffer { bytes }
     }
 
+    /// Print a floating point number into this buffer and return a reference to
+    /// its string representation within the buffer.
+    ///
+    /// # Special cases
+    ///
+    /// This function formats NaN as the string "NaN", positive infinity as
+    /// "inf", and negative infinity as "-inf" to match std::fmt.
+    ///
+    /// If your input is known to be finite, you may get better performance by
+    /// calling the `format_finite` method instead of `format` to avoid the
+    /// checks for special cases.
     pub fn format(&mut self, f: f64) -> &str {
         if is_nonfinite(f) {
             format_nonfinite(f)
@@ -1053,6 +1087,21 @@ impl Buffer {
         }
     }
 
+    /// Print a floating point number into this buffer and return a reference to
+    /// its string representation within the buffer.
+    ///
+    /// # Special cases
+    ///
+    /// This function **does not** check for NaN or infinity. If the input
+    /// number is not a finite float, the printed representation will be some
+    /// correctly formatted but unspecified numerical value.
+    ///
+    /// Please check [`is_finite`] yourself before calling this function, or
+    /// check [`is_nan`] and [`is_infinite`] and handle those cases yourself.
+    ///
+    /// [`is_finite`]: f64::is_finite
+    /// [`is_nan`]: f64::is_nan
+    /// [`is_infinite`]: f64::is_infinite
     pub fn format_finite(&mut self, f: f64) -> &str {
         unsafe {
             let end = dtoa(f, self.bytes.as_mut_ptr().cast::<u8>());
