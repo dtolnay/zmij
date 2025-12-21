@@ -1008,7 +1008,7 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
         // 1234e30 -> 1.234e33
         *buffer = *buffer.add(1);
         *buffer.add(1) = b'.';
-        buffer = buffer.add(1 + length * usize::from(length > 1));
+        buffer = buffer.add(length + usize::from(length > 1));
         *buffer = b'e';
         buffer = buffer.add(1);
     }
