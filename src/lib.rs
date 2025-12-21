@@ -915,7 +915,9 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
             // Exact half-ulp tie when rounding to nearest integer.
             fractional != (1 << 63) &&
             // Exact half-ulp tie when rounding to nearest 10.
-            rem10 != half_ulp10 && TEN.wrapping_sub(upper) > 1
+            rem10 != half_ulp10 &&
+            // Near-boundary case for rounding to nearest 10.
+            TEN.wrapping_sub(upper) > 1
         } {
             let round = (upper >> NUM_FRACTIONAL_BITS) >= 10;
             let shorter = integral - digit + u64::from(round) * 10;
@@ -923,7 +925,7 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
             return unsafe {
                 write(
                     buffer,
-                    if half_ulp10 >= rem10 || round {
+                    if rem10 <= half_ulp10 || round {
                         shorter
                     } else {
                         longer
