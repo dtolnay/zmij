@@ -810,6 +810,8 @@ struct fp {
     exp: i32,
 }
 
+// Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
+// representation.
 fn to_decimal(bin_sig: u64, bin_exp: i32, regular: bool) -> fp {
     // Compute the decimal exponent as floor(log10(2**bin_exp)) if regular or
     // floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
@@ -949,6 +951,7 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
     const EXP_MASK: i32 = (1 << NUM_EXP_BITS) - 1;
     const EXP_BIAS: i32 = (1 << (NUM_EXP_BITS - 1)) - 1;
     let mut bin_exp = (bits >> NUM_SIG_BITS) as i32 & EXP_MASK; // binary exponent
+
     if bin_exp == 0 {
         if bin_sig == 0 {
             return unsafe {
