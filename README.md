@@ -21,7 +21,7 @@ implementation in C++, [https://github.com/vitaut/zmij][upstream].
 fn main() {
     let mut buffer = zmij::Buffer::new();
     let printed = buffer.format(1.234);
-    assert_eq!(printed, "1.234e+0");
+    assert_eq!(printed, "1.234");
 }
 ```
 

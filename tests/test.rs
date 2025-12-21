@@ -11,13 +11,13 @@ fn normal() {
 
 #[test]
 fn small_int() {
-    assert_eq!(dtoa(1.0), "1e+0");
+    assert_eq!(dtoa(1.0), "1.0");
 }
 
 #[test]
 fn zero() {
-    assert_eq!(dtoa(0.0), "0");
-    assert_eq!(dtoa(-0.0), "-0");
+    assert_eq!(dtoa(0.0), "0.0");
+    assert_eq!(dtoa(-0.0), "-0.0");
 }
 
 #[test]
