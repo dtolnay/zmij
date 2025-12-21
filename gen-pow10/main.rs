@@ -1,9 +1,7 @@
-// Power of 10 overestimates generator for the Schubfach algorithm:
-// https://fmt.dev/papers/Schubfach4.pdf.
+// Power of 10 significand generator for Żmij.
 // Copyright (c) 2025 - present, Victor Zverovich
 
 use num_bigint::BigUint as Uint;
-use num_integer::Integer as _;
 use std::f64::consts::LOG2_10;
 
 fn main() {
@@ -19,14 +17,13 @@ fn main() {
         let bin_exp = (f64::from(dec_exp) * LOG2_10).floor() as i32 - (num_bits - 1);
         let bin_pow = Uint::from(2_u8).pow(bin_exp.unsigned_abs());
         let dec_pow = Uint::from(10_u8).pow(dec_exp.unsigned_abs());
-        let mut result = if dec_exp < 0 {
+        let result = if dec_exp < 0 {
             bin_pow / dec_pow
         } else if bin_exp < 0 {
             dec_pow * bin_pow
         } else {
             dec_pow / bin_pow
         };
-        result.inc();
         let hi = &result >> 64;
         let lo = result & (Uint::from(2_u8).pow(64) - Uint::from(1_u8));
         println!("{{{hi:#x}, {lo:#018x}}}, // {dec_exp:4}");
