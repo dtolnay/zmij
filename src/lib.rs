@@ -917,7 +917,8 @@ fn to_decimal(bin_sig: u64, bin_exp: i32, regular: bool) -> fp {
         }
     }
 
-    // Fallback to Schubfach to guarantee correctness and switch to overestimates.
+    // Fallback to Schubfach to guarantee correctness in boundary cases and
+    // switch to overestimates.
     pow10_lo += 1;
 
     // Shift the significand so that boundaries are integer.
