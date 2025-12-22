@@ -13,7 +13,7 @@ fn normal() {
 fn subnormal() {
     assert_eq!(dtoa(1e-323), "1e-323");
     assert_eq!(dtoa(1.2e-322), "1.2e-322");
-    assert_eq!(dtoa(1.24e-322), "1.20e-322"); // FIXME
+    assert_eq!(dtoa(1.24e-322), "1.24e-322");
     assert_eq!(dtoa(1.234e-320), "1.234e-320");
 }
 

@@ -1016,7 +1016,7 @@ unsafe fn dtoa(value: f64, mut buffer: *mut u8) -> *mut u8 {
                 p = p.add(1);
             }
             let num_zeros = p.offset_from(buffer.add(1)) as usize;
-            ptr::copy(p, buffer.add(1), num_digits - num_zeros);
+            ptr::copy(p, buffer.add(1), num_digits - num_zeros + 1);
             dec_exp -= num_zeros as i32;
             end = end.sub(num_zeros);
         }
