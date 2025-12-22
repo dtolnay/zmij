@@ -65,6 +65,11 @@ const NAN: &str = "NaN";
 const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 
+const _: () = {
+    let static_data = mem::size_of_val(&POW10_SIGNIFICANDS) + mem::size_of_val(&DIGITS2);
+    assert!(static_data == 10072); // 9.8K
+};
+
 #[allow(non_camel_case_types)]
 struct uint128 {
     hi: u64,
@@ -749,28 +754,28 @@ fn count_trailing_nonzeros(x: u64) -> usize {
     (70 - ((x << 1) | 1).leading_zeros()) as usize / 8
 }
 
+// Align data since unaligned access may be slower when crossing a
+// hardware-specific boundary.
+#[repr(align(2))]
+struct Digits2([u8; 200]);
+
+static DIGITS2: Digits2 = Digits2(
+    *b"0001020304050607080910111213141516171819\
+       2021222324252627282930313233343536373839\
+       4041424344454647484950515253545556575859\
+       6061626364656667686970717273747576777879\
+       8081828384858687888990919293949596979899",
+);
+
 // Converts value in the range [0, 100) to a string. GCC generates a bit better
 // code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn digits2(value: usize) -> &'static u16 {
-    // Align data since unaligned access may be slower when crossing a
-    // hardware-specific boundary.
-    #[repr(align(2))]
-    struct Digits([u8; 200]);
-
-    static DATA: Digits = Digits(
-        *b"0001020304050607080910111213141516171819\
-           2021222324252627282930313233343536373839\
-           4041424344454647484950515253545556575859\
-           6061626364656667686970717273747576777879\
-           8081828384858687888990919293949596979899",
-    );
-
     debug_assert!(value < 100);
 
     #[allow(clippy::cast_ptr_alignment)]
     unsafe {
-        &*DATA.0.as_ptr().cast::<u16>().add(value)
+        &*DIGITS2.0.as_ptr().cast::<u16>().add(value)
     }
 }
 
