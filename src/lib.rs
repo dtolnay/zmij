@@ -771,6 +771,7 @@ unsafe fn digits2(value: usize) -> &'static u16 {
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd8(abcdefgh: u64) -> u64 {
+    // An optimization from Xiang JunBo.
     // Three steps BCD. Base 10000 -> base 100 -> base 10.
     // div and mod are evaluated simultaneously as, e.g.
     //   (abcdefgh / 10000) << 32 + (abcdefgh % 10000)
