@@ -964,10 +964,10 @@ where
     // Pick the closest of dec_sig_below and dec_sig_above and check if it's in
     // the rounding interval.
     let cmp = scaled_sig.wrapping_sub((dec_sig_below + dec_sig_above) << 1) as i64;
-    let under_closer = cmp < 0 || (cmp == 0 && (dec_sig_below & 1) == 0);
-    let under_in = (dec_sig_below << BOUND_SHIFT) >= lower;
+    let below_closer = cmp < 0 || (cmp == 0 && (dec_sig_below & 1) == 0);
+    let below_in = (dec_sig_below << BOUND_SHIFT) >= lower;
     fp {
-        sig: if under_closer & under_in {
+        sig: if below_closer & below_in {
             dec_sig_below
         } else {
             dec_sig_above
