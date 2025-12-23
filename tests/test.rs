@@ -19,6 +19,7 @@ mod dtoa_test {
 
     #[test]
     fn subnormal() {
+        assert_eq!(dtoa(0.0f64.next_up()), "5e-324");
         assert_eq!(dtoa(1e-323), "1e-323");
         assert_eq!(dtoa(1.2e-322), "1.2e-322");
         assert_eq!(dtoa(1.24e-322), "1.24e-322");
@@ -83,5 +84,10 @@ mod ftoa_test {
     #[test]
     fn normal() {
         assert_eq!(ftoa(6.62607e-34), "6.62607e-34");
+    }
+
+    #[test]
+    fn subnormal() {
+        assert_eq!(ftoa(0.0f32.next_up()), "0.0000001e-38");
     }
 }
