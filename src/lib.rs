@@ -824,7 +824,7 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
 // and removes trailing zeros.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_significand9(mut buffer: *mut u8, value: u32) -> *mut u8 {
-    // Each digits is denoted by a letter so value is abbccddee.
+    // Each digit is denoted by a letter so value is abbccddee.
     let a = value / 100_000_000;
     let bbccddee = value % 100_000_000;
 
