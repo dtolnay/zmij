@@ -1070,19 +1070,18 @@ where
         sig: mut dec_sig,
         exp: mut dec_exp,
     } = to_decimal(bin_sig, bin_exp, regular, subnormal);
-    let mut num_digits = Float::MAX_DIGITS10 - 2;
+    let num_digits = Float::MAX_DIGITS10 as i32 - 2;
     let end = if num_bits == 64 {
-        num_digits += u32::from(dec_sig >= 10_000_000_000_000_000);
+        dec_exp += num_digits + i32::from(dec_sig >= 10_000_000_000_000_000);
         unsafe { write_significand17(buffer.add(1), dec_sig) }
     } else {
         if dec_sig < 10_000_000 {
             dec_sig *= 10;
             dec_exp -= 1;
         }
-        num_digits += u32::from(dec_sig >= 100_000_000);
+        dec_exp += num_digits + i32::from(dec_sig >= 100_000_000);
         unsafe { write_significand9(buffer.add(1), dec_sig as u32) }
     };
-    dec_exp += num_digits as i32;
 
     let length = unsafe { end.offset_from(buffer.add(1)) } as usize;
 
