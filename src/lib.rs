@@ -998,16 +998,18 @@ where
         );
     }
 
-    let scaled_sig: u64 =
-        umul_upper_inexact_to_odd(pow10_hi, pow10_lo, bin_sig_shifted << exp_shift).into();
+    let scaled_sig = umul_upper_inexact_to_odd(pow10_hi, pow10_lo, bin_sig_shifted << exp_shift);
     let dec_sig_below = scaled_sig >> BOUND_SHIFT;
-    let dec_sig_above = dec_sig_below + 1;
+    let dec_sig_above = dec_sig_below + UInt::from(1);
 
     // Pick the closest of dec_sig_below and dec_sig_above and check if it's in
     // the rounding interval.
-    let cmp = scaled_sig.wrapping_sub((dec_sig_below + dec_sig_above) << 1) as i64;
-    let below_closer = cmp < 0 || (cmp == 0 && (dec_sig_below & 1) == 0);
-    let below_in = (dec_sig_below << BOUND_SHIFT) >= lower.into();
+    let cmp = scaled_sig
+        .wrapping_sub((dec_sig_below + dec_sig_above) << 1)
+        .to_signed();
+    let below_closer = cmp < UInt::from(0).to_signed()
+        || (cmp == UInt::from(0).to_signed() && (dec_sig_below & UInt::from(1)) == UInt::from(0));
+    let below_in = (dec_sig_below << BOUND_SHIFT) >= lower;
     let dec_sig = if below_closer & below_in {
         dec_sig_below
     } else {
@@ -1015,7 +1017,7 @@ where
     };
     normalize::<UInt>(
         fp {
-            sig: dec_sig,
+            sig: dec_sig.into(),
             exp: dec_exp,
         },
         subnormal,
