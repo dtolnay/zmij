@@ -42,6 +42,7 @@
     clippy::cast_sign_loss,
     clippy::doc_markdown,
     clippy::items_after_statements,
+    clippy::missing_const_for_fn,
     clippy::must_use_candidate,
     clippy::needless_doctest_main,
     clippy::redundant_else,
@@ -855,7 +856,7 @@ struct fp {
     exp: i32,
 }
 
-fn normalize<UInt>(mut dec: fp, subnormal: bool) -> fp
+const fn normalize<UInt>(mut dec: fp, subnormal: bool) -> fp
 where
     UInt: traits::UInt,
 {
@@ -915,17 +916,15 @@ where
 
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     if regular && !subnormal {
-        let integral; // integral part of bin_sig * pow10
-        let fractional; // fractional part of bin_sig * pow10
-        if num_bits == 64 {
+        // integral part of bin_sig * pow10
+        // fractional part of bin_sig * pow10
+        let (integral, fractional) = if num_bits == 64 {
             let result = umul192_upper128(pow10_hi, pow10_lo, (bin_sig << exp_shift).into());
-            integral = UInt::truncate(result.hi);
-            fractional = result.lo;
+            (UInt::truncate(result.hi), result.lo)
         } else {
             let result = umul128(pow10_hi, (bin_sig << exp_shift).into());
-            integral = UInt::truncate((result >> 64) as u64);
-            fractional = result as u64;
-        }
+            (UInt::truncate((result >> 64) as u64), result as u64)
+        };
         let digit = integral.into() % 10;
 
         // Switch to a fixed-point representation with the least significant
@@ -1051,8 +1050,7 @@ where
     let exp_bias = (1 << (num_exp_bits - 1)) - 1;
     let mut bin_exp = (bits >> num_sig_bits).into() as i32 & exp_mask; // binary exponent
 
-    let mut subnormal = false;
-    if bin_exp == 0 {
+    let subnormal = if bin_exp == 0 {
         if bin_sig == Float::UInt::from(0) {
             return unsafe {
                 *buffer = b'0';
@@ -1067,8 +1065,11 @@ where
         regular = true;
         bin_sig |= implicit_bit;
         bin_exp = 1;
-        subnormal = true;
-    }
+        true
+    } else {
+        false
+    };
+
     bin_sig ^= implicit_bit;
     bin_exp -= num_sig_bits + exp_bias;
 
@@ -1165,7 +1166,7 @@ impl Buffer {
     #[cfg_attr(feature = "no-panic", no_panic)]
     pub fn new() -> Self {
         let bytes = [MaybeUninit::<u8>::uninit(); BUFFER_SIZE];
-        Buffer { bytes }
+        Self { bytes }
     }
 
     /// Print a floating point number into this buffer and return a reference to
@@ -1295,6 +1296,6 @@ impl Default for Buffer {
     #[inline]
     #[cfg_attr(feature = "no-panic", no_panic)]
     fn default() -> Self {
-        Buffer::new()
+        Self::new()
     }
 }

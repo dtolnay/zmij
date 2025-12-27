@@ -59,7 +59,7 @@ impl UInt for u32 {
         self.wrapping_sub(other)
     }
     fn truncate(big: u64) -> Self {
-        big as u32
+        big as Self
     }
     fn enlarge(small: u32) -> Self {
         small
@@ -78,7 +78,7 @@ impl UInt for u64 {
         big
     }
     fn enlarge(small: u32) -> Self {
-        u64::from(small)
+        Self::from(small)
     }
     fn to_signed(self) -> Self::Signed {
         self as i64

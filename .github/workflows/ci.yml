@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@clippy
-      - run: cargo clippy --tests --benches -- -Dclippy::all -Dclippy::pedantic
+      - run: cargo clippy --tests --benches -- -Dclippy::all -Dclippy::pedantic -Dclippy::nursery
 
   miri:
     name: Miri (${{matrix.name}})

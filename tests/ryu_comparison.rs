@@ -1,6 +1,7 @@
 use rand::rngs::SmallRng;
 use rand::{RngCore as _, SeedableRng as _};
 
+#[allow(clippy::equatable_if_let)]
 const N: usize = if cfg!(miri) {
     500
 } else if let b"0" = opt_level::OPT_LEVEL.as_bytes() {
