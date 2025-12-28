@@ -56,7 +56,8 @@
     clippy::redundant_else,
     clippy::similar_names,
     clippy::too_many_lines,
-    clippy::unreadable_literal
+    clippy::unreadable_literal,
+    clippy::wildcard_imports
 )]
 
 #[cfg(test)]
@@ -825,24 +826,149 @@ const ZEROS: u64 = 0x30303030_30303030; // 0x30 == '0'
 // normals) and removes trailing zeros.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
-    // Each digits is denoted by a letter so value is abbccddeeffgghhii where
-    // digit a can be zero.
-    let abbccddee = (value / 100_000_000) as u32;
-    let ffgghhii = (value % 100_000_000) as u32;
-    unsafe {
-        buffer = write_if_nonzero(buffer, abbccddee / 100_000_000);
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon", not(miri))))]
+    {
+        // Each digits is denoted by a letter so value is abbccddeeffgghhii where
+        // digit a can be zero.
+        let abbccddee = (value / 100_000_000) as u32;
+        let ffgghhii = (value % 100_000_000) as u32;
+        unsafe {
+            buffer = write_if_nonzero(buffer, abbccddee / 100_000_000);
+        }
+        let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
+        unsafe {
+            write8(buffer, bcd | ZEROS);
+        }
+        if ffgghhii == 0 {
+            return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
+        }
+        let bcd = to_bcd8(u64::from(ffgghhii));
+        unsafe {
+            write8(buffer.add(8), bcd | ZEROS);
+            buffer.add(8).add(count_trailing_nonzeros(bcd))
+        }
     }
-    let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
-    unsafe {
-        write8(buffer, bcd | ZEROS);
-    }
-    if ffgghhii == 0 {
-        return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
-    }
-    let bcd = to_bcd8(u64::from(ffgghhii));
-    unsafe {
-        write8(buffer.add(8), bcd | ZEROS);
-        buffer.add(8).add(count_trailing_nonzeros(bcd))
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    {
+        use core::arch::aarch64::*;
+        use core::arch::asm;
+
+        // An optimized version for NEON by Dougall Johnson.
+        struct ToStringConstants {
+            mul_const: u64,
+            hundred_million: u64,
+            multipliers32: int32x4_t,
+            multipliers16: int16x8_t,
+        }
+
+        static CONSTANTS: ToStringConstants = ToStringConstants {
+            mul_const: 0xabcc77118461cefd,
+            hundred_million: 100000000,
+            multipliers32: unsafe {
+                mem::transmute::<[i32; 4], int32x4_t>([
+                    0x68db8bb,
+                    -10000 + 0x10000,
+                    0x147b000,
+                    -100 + 0x10000,
+                ])
+            },
+            multipliers16: unsafe {
+                mem::transmute::<[i16; 8], int16x8_t>([0xce0, -10 + 0x100, 0, 0, 0, 0, 0, 0])
+            },
+        };
+
+        let mut c = ptr::addr_of!(CONSTANTS);
+
+        // Compiler barrier, or clang doesn't load from memory and generates 15
+        // more instructions
+        let c = unsafe {
+            asm!("/*{0}*/", inout(reg) c);
+            &*c
+        };
+
+        let mut hundred_million = c.hundred_million;
+
+        // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
+        unsafe {
+            asm!("/*{0}*/", inout(reg) hundred_million);
+        }
+
+        // Equivalent to abbccddee = value / 100000000, ffgghhii = value % 100000000.
+        let mut abbccddee = ((u128::from(value) * u128::from(c.mul_const)) >> 90) as u64;
+        let ffgghhii = value - abbccddee * hundred_million;
+
+        // We could probably make this bit faster, but we're preferring to
+        // reuse the constants for now.
+        let a = ((u128::from(abbccddee) * u128::from(c.mul_const)) >> 90) as u64;
+        abbccddee -= a * hundred_million;
+
+        unsafe {
+            buffer = write_if_nonzero(buffer, a as u32);
+
+            let hundredmillions: uint64x1_t =
+                mem::transmute::<u64, uint64x1_t>(abbccddee | (ffgghhii << 32));
+
+            let high_10000: int32x2_t = mem::transmute::<uint32x2_t, int32x2_t>(vshr_n_u32(
+                mem::transmute::<int32x2_t, uint32x2_t>(vqdmulh_n_s32(
+                    mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions),
+                    mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
+                )),
+                9,
+            ));
+            let tenthousands: int32x2_t = vmla_n_s32(
+                mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions),
+                high_10000,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
+            );
+
+            let mut extended: int32x4_t = mem::transmute::<uint32x4_t, int32x4_t>(vshll_n_u16(
+                mem::transmute::<int32x2_t, uint16x4_t>(tenthousands),
+                0,
+            ));
+
+            // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
+            // MUL.
+            asm!("/*{:v}*/", inout(vreg) extended);
+
+            let high_100: int32x4_t = vqdmulhq_n_s32(
+                extended,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
+            );
+            let hundreds: int32x4_t = vmlaq_n_s32(
+                extended,
+                high_100,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
+            );
+            let high_10: int16x8_t = vqdmulhq_n_s16(
+                mem::transmute::<int32x4_t, int16x8_t>(hundreds),
+                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
+            );
+            let digits: int16x8_t =
+                mem::transmute::<uint8x16_t, int16x8_t>(vrev64q_u8(mem::transmute::<
+                    int16x8_t,
+                    uint8x16_t,
+                >(vmlaq_n_s16(
+                    mem::transmute::<int32x4_t, int16x8_t>(hundreds),
+                    high_10,
+                    mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
+                ))));
+            let ascii: int16x8_t = mem::transmute::<uint16x8_t, int16x8_t>(vaddq_u16(
+                mem::transmute::<int16x8_t, uint16x8_t>(digits),
+                mem::transmute::<int8x16_t, uint16x8_t>(vdupq_n_s8(b'0' as i8)),
+            ));
+
+            buffer.cast::<int16x8_t>().write_unaligned(ascii);
+
+            let is_zero: uint16x8_t =
+                mem::transmute::<uint8x16_t, uint16x8_t>(vceqzq_u8(mem::transmute::<
+                    int16x8_t,
+                    uint8x16_t,
+                >(digits)));
+            let zeros: u64 = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_zero, 4)), 0);
+
+            buffer.add(16 - ((!zeros).leading_zeros() as usize >> 2))
+        }
     }
 }
 
