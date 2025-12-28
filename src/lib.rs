@@ -826,7 +826,7 @@ const ZEROS: u64 = 0x30303030_30303030; // 0x30 == '0'
 // normals) and removes trailing zeros.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon", not(miri))))]
     {
         // Each digits is denoted by a letter so value is abbccddeeffgghhii where
         // digit a can be zero.
@@ -849,7 +849,7 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         }
     }
 
-    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         use core::arch::aarch64::*;
         use core::arch::asm;
