@@ -62,6 +62,8 @@
 mod tests;
 mod traits;
 
+#[cfg(not(zmij_no_select_unpredictable))]
+use core::hint;
 use core::mem::{self, MaybeUninit};
 use core::ptr;
 use core::slice;
@@ -967,7 +969,10 @@ where
             let longer = integral.into() + u64::from(fractional >= HALF_ULP);
             let use_shorter = scaled_sig_mod10 <= scaled_half_ulp || round_up;
             return fp {
+                #[cfg(zmij_no_select_unpredictable)]
                 sig: if use_shorter { shorter } else { longer },
+                #[cfg(not(zmij_no_select_unpredictable))]
+                sig: hint::select_unpredictable(use_shorter, shorter, longer),
                 exp: dec_exp,
             };
         }
