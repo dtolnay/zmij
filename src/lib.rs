@@ -887,27 +887,29 @@ where
     dec
 }
 
-// Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
-// representation.
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_decimal<UInt>(bin_sig: UInt, bin_exp: i32, regular: bool, subnormal: bool) -> fp
-where
-    UInt: traits::UInt,
-{
-    // Compute the decimal exponent as floor(log10(2**bin_exp)) if regular or
-    // floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
+// Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
+// floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
+fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
+    debug_assert!((-1334..=2620).contains(&bin_exp));
     // log10_3_over_4_sig = round(log10(3/4) * 2**log10_2_exp)
     const LOG10_3_OVER_4_SIG: i32 = -131_008;
     // log10_2_sig = round(log10(2) * 2**log10_2_exp)
     const LOG10_2_SIG: i32 = 315_653;
     const LOG10_2_EXP: i32 = 20;
-    debug_assert!((-1334..=2620).contains(&bin_exp));
-    let dec_exp = (bin_exp * LOG10_2_SIG + i32::from(!regular) * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP;
+    (bin_exp * LOG10_2_SIG + i32::from(!regular) * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
+}
 
-    const DEC_EXP_MIN: i32 = -292;
-    let (mut pow10_hi, mut pow10_lo) =
-        *unsafe { POW10_SIGNIFICANDS.get_unchecked((-dec_exp - DEC_EXP_MIN) as usize) };
-
+// Computes a shift so that, after scaling by a power of 10, the intermediate
+// result always has a fixed 128-bit fractional part (for double).
+//
+// Different binary exponents can map to the same decimal exponent, but place
+// the decimal point at different bit positions. The shift compensates for this.
+//
+// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
+// 10^dec_exp puts the decimal point in different bit positions:
+//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
+//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+fn compute_exp_shift(bin_exp: i32, dec_exp: i32) -> i32 {
     // log2_pow10_sig = round(log2(10) * 2**log2_pow10_exp) + 1
     const LOG2_POW10_SIG: i32 = 217_707;
     const LOG2_POW10_EXP: i32 = 16;
@@ -922,7 +924,21 @@ where
     // decimal point in different (bit) positions without the shift:
     //   3 * 2**59 / 100 = 1.72...e+16 (exp_shift = 1 + 1)
     //   3 * 2**60 / 100 = 3.45...e+16 (exp_shift = 2 + 1)
-    let exp_shift = bin_exp + pow10_bin_exp + 1;
+    bin_exp + pow10_bin_exp + 1
+}
+
+// Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
+// representation.
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_decimal<UInt>(bin_sig: UInt, bin_exp: i32, regular: bool, subnormal: bool) -> fp
+where
+    UInt: traits::UInt,
+{
+    let dec_exp = compute_dec_exp(bin_exp, regular);
+    let exp_shift = compute_exp_shift(bin_exp, dec_exp);
+    const DEC_EXP_MIN: i32 = -292;
+    let (mut pow10_hi, mut pow10_lo) =
+        *unsafe { POW10_SIGNIFICANDS.get_unchecked((-dec_exp - DEC_EXP_MIN) as usize) };
 
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     if regular && !subnormal {
