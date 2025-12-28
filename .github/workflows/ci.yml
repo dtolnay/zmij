@@ -17,14 +17,15 @@ jobs:
     uses: dtolnay/.github/.github/workflows/pre_ci.yml@master
 
   test:
-    name: Rust ${{matrix.rust}}
+    name: Rust ${{matrix.rust}} (${{matrix.arch}})
     needs: pre_ci
     if: needs.pre_ci.outputs.continue
-    runs-on: ubuntu-latest
+    runs-on: ${{matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm'}}
     strategy:
       fail-fast: false
       matrix:
         rust: [nightly, beta, stable, 1.86.0, 1.68.0]
+        arch: [x86_64, aarch64]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -42,7 +43,7 @@ jobs:
       - run: cargo test --release
         if: matrix.rust != '1.68.0'
       - uses: actions/upload-artifact@v6
-        if: matrix.rust == 'nightly' && always()
+        if: matrix.rust == 'nightly' && matrix.arch == 'x86_64' && always()
         with:
           name: Cargo.lock
           path: Cargo.lock
