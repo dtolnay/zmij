@@ -1180,31 +1180,43 @@ where
     )
 }
 
+trait FloatTraits: traits::Float {
+    const NUM_BITS: i32;
+    const NUM_SIG_BITS: i32 = Self::MANTISSA_DIGITS as i32 - 1;
+    const NUM_EXP_BITS: i32 = Self::NUM_BITS - Self::NUM_SIG_BITS - 1;
+    const EXP_MASK: i32 = (1 << Self::NUM_EXP_BITS) - 1;
+    const EXP_BIAS: i32 = (1 << (Self::NUM_EXP_BITS - 1)) - 1;
+    const IMPLICIT_BIT: Self::UInt;
+}
+
+impl FloatTraits for f32 {
+    const NUM_BITS: i32 = 32;
+    const IMPLICIT_BIT: u32 = 1 << Self::NUM_SIG_BITS;
+}
+
+impl FloatTraits for f64 {
+    const NUM_BITS: i32 = 64;
+    const IMPLICIT_BIT: u64 = 1 << Self::NUM_SIG_BITS;
+}
+
 /// Writes the shortest correctly rounded decimal representation of `value` to
 /// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write<Float>(value: Float, mut buffer: *mut u8) -> *mut u8
 where
-    Float: traits::Float,
+    Float: FloatTraits,
 {
-    let num_bits = mem::size_of::<Float>() as i32 * 8;
     let bits = value.to_bits();
 
     unsafe {
         *buffer = b'-';
-        buffer = buffer.add((bits >> (num_bits - 1)).into() as usize);
+        buffer = buffer.add((bits >> (Float::NUM_BITS - 1)).into() as usize);
     }
 
-    let num_sig_bits = Float::MANTISSA_DIGITS as i32 - 1;
-    let implicit_bit = Float::UInt::from(1) << num_sig_bits;
-    let mut bin_sig = bits & (implicit_bit - Float::UInt::from(1)); // binary significand
+    let mut bin_sig = bits & (Float::IMPLICIT_BIT - Float::UInt::from(1)); // binary significand
     let mut regular = bin_sig != Float::UInt::from(0);
 
-    let num_exp_bits = num_bits - num_sig_bits - 1;
-    let exp_mask = (1 << num_exp_bits) - 1;
-    let exp_bias = (1 << (num_exp_bits - 1)) - 1;
-    let mut bin_exp = (bits >> num_sig_bits).into() as i32 & exp_mask; // binary exponent
-
+    let mut bin_exp = (bits >> Float::NUM_SIG_BITS).into() as i32 & Float::EXP_MASK; // binary exponent
     let mut subnormal = false;
     if bin_exp == 0 {
         if bin_sig == Float::UInt::from(0) {
@@ -1219,19 +1231,19 @@ where
         // Setting regular is not redundant: it avoids extra data dependencies
         // and register pressure on the hot path (measurable perf impact).
         regular = true;
-        bin_sig |= implicit_bit;
+        bin_sig |= Float::IMPLICIT_BIT;
         bin_exp = 1;
         subnormal = true;
     }
-    bin_sig ^= implicit_bit;
-    bin_exp -= num_sig_bits + exp_bias;
+    bin_sig ^= Float::IMPLICIT_BIT;
+    bin_exp -= Float::NUM_SIG_BITS + Float::EXP_BIAS;
 
     let fp {
         sig: mut dec_sig,
         exp: mut dec_exp,
     } = to_decimal(bin_sig, bin_exp, regular, subnormal);
     let num_digits = Float::MAX_DIGITS10 as i32 - 2;
-    let end = if num_bits == 64 {
+    let end = if Float::NUM_BITS == 64 {
         dec_exp += num_digits + i32::from(dec_sig >= 10_000_000_000_000_000);
         unsafe { write_significand17(buffer.add(1), dec_sig) }
     } else {
@@ -1245,8 +1257,8 @@ where
 
     let length = unsafe { end.offset_from(buffer.add(1)) } as usize;
 
-    if num_bits == 32 && (-6..=12).contains(&dec_exp)
-        || num_bits == 64 && (-5..=15).contains(&dec_exp)
+    if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
+        || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
     {
         if length as i32 - 1 <= dec_exp {
             // 1234e7 -> 12340000000.0
