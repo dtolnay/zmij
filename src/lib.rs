@@ -1066,8 +1066,8 @@ const fn compute_exp_shift(bin_exp: i32, dec_exp: i32) -> i32 {
 
 #[allow(non_camel_case_types)]
 struct fp {
-    sig: u64,
-    exp: i32,
+    sig: u64, // significand
+    exp: i32, // exponent
 }
 
 fn normalize<UInt>(mut dec: fp, subnormal: bool) -> fp
@@ -1232,9 +1232,8 @@ where
     }
 
     let mut bin_sig = Float::get_sig(bits); // binary significand
-    let mut regular = bin_sig != Float::UInt::from(0);
-
     let mut bin_exp = Float::get_exp(bits); // binary exponent
+    let mut regular = bin_sig != Float::UInt::from(0);
     let mut subnormal = false;
     if bin_exp == 0 {
         if bin_sig == Float::UInt::from(0) {
