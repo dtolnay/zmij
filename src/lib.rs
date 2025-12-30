@@ -1350,7 +1350,7 @@ where
         buffer
             .cast::<u16>()
             .write_unaligned(*digits2(dec_exp as usize));
-        sign_ptr.cast::<u16>().write_unaligned(e_sign);
+        sign_ptr.cast::<u16>().write_unaligned(e_sign.to_le());
         buffer.add(2)
     }
 }
