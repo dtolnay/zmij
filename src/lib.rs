@@ -91,6 +91,43 @@ struct uint128 {
     lo: u64,
 }
 
+// Computes 128-bit result of multiplication of two 64-bit unsigned integers.
+#[cfg_attr(feature = "no-panic", no_panic)]
+const fn umul128(x: u64, y: u64) -> u128 {
+    x as u128 * y as u128
+}
+
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn umul192_upper128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
+    let p = umul128(x_hi, y);
+    let lo = (p as u64).wrapping_add((umul128(x_lo, y) >> 64) as u64);
+    uint128 {
+        hi: (p >> 64) as u64 + u64::from(lo < p as u64),
+        lo,
+    }
+}
+
+const fn umul128_upper64(x: u64, y: u64) -> u64 {
+    (umul128(x, y) >> 64) as u64
+}
+
+// Computes upper 64 bits of multiplication of x and y, discards the least
+// significant bit and rounds to odd, where x = uint128_t(x_hi << 64) | x_lo.
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn umul_upper_inexact_to_odd<UInt>(x_hi: u64, x_lo: u64, y: UInt) -> UInt
+where
+    UInt: traits::UInt,
+{
+    let num_bits = mem::size_of::<UInt>() * 8;
+    if num_bits == 64 {
+        let uint128 { hi, lo } = umul192_upper128(x_hi, x_lo, y.into());
+        UInt::truncate(hi | u64::from((lo >> 1) != 0))
+    } else {
+        let result = (umul128(x_hi, y.into()) >> 32) as u64;
+        UInt::enlarge((result >> 32) as u32 | u32::from((result as u32 >> 1) != 0))
+    }
+}
+
 trait FloatTraits: traits::Float {
     const NUM_BITS: i32;
     const NUM_SIG_BITS: i32 = Self::MANTISSA_DIGITS as i32 - 1;
@@ -131,43 +168,6 @@ impl FloatTraits for f64 {
 
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
-    }
-}
-
-// Computes 128-bit result of multiplication of two 64-bit unsigned integers.
-#[cfg_attr(feature = "no-panic", no_panic)]
-const fn umul128(x: u64, y: u64) -> u128 {
-    x as u128 * y as u128
-}
-
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn umul192_upper128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
-    let p = umul128(x_hi, y);
-    let lo = (p as u64).wrapping_add((umul128(x_lo, y) >> 64) as u64);
-    uint128 {
-        hi: (p >> 64) as u64 + u64::from(lo < p as u64),
-        lo,
-    }
-}
-
-const fn umul128_upper64(x: u64, y: u64) -> u64 {
-    (umul128(x, y) >> 64) as u64
-}
-
-// Computes upper 64 bits of multiplication of x and y, discards the least
-// significant bit and rounds to odd, where x = uint128_t(x_hi << 64) | x_lo.
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn umul_upper_inexact_to_odd<UInt>(x_hi: u64, x_lo: u64, y: UInt) -> UInt
-where
-    UInt: traits::UInt,
-{
-    let num_bits = mem::size_of::<UInt>() * 8;
-    if num_bits == 64 {
-        let uint128 { hi, lo } = umul192_upper128(x_hi, x_lo, y.into());
-        UInt::truncate(hi | u64::from((lo >> 1) != 0))
-    } else {
-        let result = (umul128(x_hi, y.into()) >> 32) as u64;
-        UInt::enlarge((result >> 32) as u32 | u32::from((result as u32 >> 1) != 0))
     }
 }
 
