@@ -191,7 +191,7 @@ static POW10_SIGNIFICANDS: [(u64, u64); 617] = {
     };
     let ten = 0xa000000000000000;
     let mut i = 0;
-    while i < 617 {
+    while i < data.len() {
         data[i] = (current.w2, current.w1);
 
         let h0: u64 = umul128_upper64(current.w0, ten);
