@@ -1180,8 +1180,8 @@ where
     let (mut pow10_hi, mut pow10_lo) =
         *unsafe { POW10_SIGNIFICANDS.get_unchecked((-dec_exp - DEC_EXP_MIN) as usize) };
 
-    // Fallback to Schubfach to guarantee correctness in boundary cases and
-    // switch to strict overestimates of powers of 10.
+    // Fallback to Schubfach to guarantee correctness in boundary cases. This
+    // requires switching to strict overestimates of powers of 10.
     if num_bits == 64 {
         pow10_lo += 1;
     } else {
