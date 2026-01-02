@@ -380,18 +380,20 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         unsafe {
             buffer = write_if_nonzero(buffer, a as u32);
 
-            let hundredmillions: uint64x1_t =
+            let hundredmillions64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>(abbccddee | (ffgghhii << 32));
+            let hundredmillions32: uint64x1_t =
+                mem::transmute::<int32x2_t, uint64x1_t>(vreinterpret_s32_u64(hundredmillions64));
 
             let high_10000: int32x2_t = mem::transmute::<uint32x2_t, int32x2_t>(vshr_n_u32(
                 mem::transmute::<int32x2_t, uint32x2_t>(vqdmulh_n_s32(
-                    mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions),
+                    mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions32),
                     mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
                 )),
                 9,
             ));
             let tenthousands: int32x2_t = vmla_n_s32(
-                mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions),
+                mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions32),
                 high_10000,
                 mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
             );
