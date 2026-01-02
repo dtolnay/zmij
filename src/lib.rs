@@ -384,8 +384,8 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
                 mem::transmute::<u64, uint64x1_t>(abbccddee | (ffgghhii << 32));
             let hundredmillions32: int32x2_t = vreinterpret_s32_u64(hundredmillions64);
 
-            let high_10000: int32x2_t = mem::transmute::<uint32x2_t, int32x2_t>(vshr_n_u32(
-                mem::transmute::<int32x2_t, uint32x2_t>(vqdmulh_n_s32(
+            let high_10000: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
+                vreinterpret_u32_s32(vqdmulh_n_s32(
                     hundredmillions32,
                     mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
                 )),
@@ -397,10 +397,8 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
                 mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
             );
 
-            let mut extended: int32x4_t = mem::transmute::<uint32x4_t, int32x4_t>(vshll_n_u16(
-                mem::transmute::<int32x2_t, uint16x4_t>(tenthousands),
-                0,
-            ));
+            let mut extended: int32x4_t =
+                vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(tenthousands), 0));
 
             // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
             // MUL.
@@ -410,36 +408,28 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
                 extended,
                 mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
             );
-            let hundreds: int32x4_t = vmlaq_n_s32(
+            let hundreds: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
                 extended,
                 high_100,
                 mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
-            );
+            ));
             let high_10: int16x8_t = vqdmulhq_n_s16(
-                mem::transmute::<int32x4_t, int16x8_t>(hundreds),
+                hundreds,
                 mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
             );
-            let digits: int16x8_t =
-                mem::transmute::<uint8x16_t, int16x8_t>(vrev64q_u8(mem::transmute::<
-                    int16x8_t,
-                    uint8x16_t,
-                >(vmlaq_n_s16(
-                    mem::transmute::<int32x4_t, int16x8_t>(hundreds),
-                    high_10,
-                    mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
-                ))));
-            let ascii: int16x8_t = mem::transmute::<uint16x8_t, int16x8_t>(vaddq_u16(
-                mem::transmute::<int16x8_t, uint16x8_t>(digits),
-                mem::transmute::<int8x16_t, uint16x8_t>(vdupq_n_s8(b'0' as i8)),
-            ));
+            let digits: uint8x16_t = vrev64q_u8(vreinterpretq_u8_s16(vmlaq_n_s16(
+                hundreds,
+                high_10,
+                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
+            )));
+            let ascii: uint16x8_t = vaddq_u16(
+                vreinterpretq_u16_u8(digits),
+                vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
+            );
 
-            buffer.cast::<int16x8_t>().write_unaligned(ascii);
+            buffer.cast::<uint16x8_t>().write_unaligned(ascii);
 
-            let is_zero: uint16x8_t =
-                mem::transmute::<uint8x16_t, uint16x8_t>(vceqzq_u8(mem::transmute::<
-                    int16x8_t,
-                    uint8x16_t,
-                >(digits)));
+            let is_zero: uint16x8_t = vreinterpretq_u16_u8(vceqq_u8(digits, vdupq_n_u8(0)));
             let zeros: u64 = !vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_zero, 4)), 0);
 
             buffer.add(16 - (zeros.leading_zeros() as usize >> 2))
