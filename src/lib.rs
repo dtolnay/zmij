@@ -369,12 +369,12 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         }
 
         // Equivalent to abbccddee = value / 100000000, ffgghhii = value % 100000000.
-        let mut abbccddee = ((u128::from(value) * u128::from(c.mul_const)) >> 90) as u64;
+        let mut abbccddee = (umul128(value, c.mul_const) >> 90) as u64;
         let ffgghhii = value - abbccddee * hundred_million;
 
         // We could probably make this bit faster, but we're preferring to
         // reuse the constants for now.
-        let a = ((u128::from(abbccddee) * u128::from(c.mul_const)) >> 90) as u64;
+        let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         abbccddee -= a * hundred_million;
 
         unsafe {
@@ -382,18 +382,17 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
 
             let hundredmillions64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>(abbccddee | (ffgghhii << 32));
-            let hundredmillions32: uint64x1_t =
-                mem::transmute::<int32x2_t, uint64x1_t>(vreinterpret_s32_u64(hundredmillions64));
+            let hundredmillions32: int32x2_t = vreinterpret_s32_u64(hundredmillions64);
 
             let high_10000: int32x2_t = mem::transmute::<uint32x2_t, int32x2_t>(vshr_n_u32(
                 mem::transmute::<int32x2_t, uint32x2_t>(vqdmulh_n_s32(
-                    mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions32),
+                    hundredmillions32,
                     mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
                 )),
                 9,
             ));
             let tenthousands: int32x2_t = vmla_n_s32(
-                mem::transmute::<uint64x1_t, int32x2_t>(hundredmillions32),
+                hundredmillions32,
                 high_10000,
                 mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
             );
