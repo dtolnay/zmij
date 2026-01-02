@@ -142,6 +142,10 @@ trait FloatTraits: traits::Float {
 
     fn to_bits(self) -> Self::SigType;
 
+    fn is_negative(bits: Self::SigType) -> bool {
+        (bits >> (Self::NUM_BITS - 1)) != Self::SigType::from(0)
+    }
+
     fn get_sig(bits: Self::SigType) -> Self::SigType {
         bits & (Self::IMPLICIT_BIT - Self::SigType::from(1))
     }
@@ -702,7 +706,7 @@ where
 
     unsafe {
         *buffer = b'-';
-        buffer = buffer.add((bits >> (Float::NUM_BITS - 1)).into() as usize);
+        buffer = buffer.add(usize::from(Float::is_negative(bits)));
     }
 
     let mut bin_sig = Float::get_sig(bits); // binary significand
