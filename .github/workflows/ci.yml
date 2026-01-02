@@ -42,6 +42,14 @@ jobs:
         if: matrix.rust != '1.68.0'
       - run: cargo test --release
         if: matrix.rust != '1.68.0'
+      - run: cargo test
+        if: matrix.rust != '1.68.0'
+        env:
+          RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
+      - run: cargo test --release
+        if: matrix.rust != '1.68.0'
+        env:
+          RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
       - uses: actions/upload-artifact@v6
         if: matrix.rust == 'nightly' && matrix.arch == 'x86_64' && always()
         with:
