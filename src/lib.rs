@@ -671,7 +671,7 @@ where
         //                               1ulp
         //
         // s - shorter underestimate, S - shorter overestimate
-        // l - longer underestimate,  L - longer underestimate
+        // l - longer underestimate,  L - longer overestimate
 
         // An optimization from yy by Yaoyuan Guo:
         if {
