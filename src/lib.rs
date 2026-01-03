@@ -657,6 +657,22 @@ where
         let upper = scaled_sig_mod10 + scaled_half_ulp;
         const HALF_ULP: u64 = 1 << 63;
 
+        // value = 5.0507837461e-27
+        // next  = 5.0507837461000010e-27
+        //
+        // c = integral.fractional = 50507837461000003.2840565642863009226 (value)
+        //                           50507837461000010.3286355093970513089 (next)
+        //
+        //      50507837461000000                                  50507837461000010
+        //               s              l c  L                             S
+        // ────┬────┬────┼────┬────┬────┼─*──┼────┬────┬────┬────┬────┬────┼-*--┬───
+        //     8    9    0    1    2    3    4    5    6    7    8    9    0 |  1
+        //              └─────────────────┼─────────────────┘               next
+        //                               1ulp
+        //
+        // s - shorter underestimate, S - shorter overestimate
+        // l - longer underestimate,  L - longer underestimate
+
         // An optimization from yy by Yaoyuan Guo:
         if {
             // Exact half-ulp tie when rounding to nearest integer.
