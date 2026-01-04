@@ -801,7 +801,7 @@ where
     bin_sig ^= Float::IMPLICIT_BIT;
 
     // Here be 🐉s.
-    let dec = to_decimal(bin_sig, bin_exp, dec_exp, regular, subnormal);
+    let mut dec = to_decimal(bin_sig, bin_exp, dec_exp, regular, subnormal);
     dec_exp = dec.exp;
 
     // Write significand.
