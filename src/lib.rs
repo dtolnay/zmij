@@ -79,7 +79,13 @@ use no_panic::no_panic;
 
 const BUFFER_SIZE: usize = 24;
 const NAN: &str = "NaN";
+#[cfg(feature = "ecmascript")]
+const INFINITY: &str = "Infinity";
+#[cfg(feature = "ecmascript")]
+const NEG_INFINITY: &str = "-Infinity";
+#[cfg(not(feature = "ecmascript"))]
 const INFINITY: &str = "inf";
+#[cfg(not(feature = "ecmascript"))]
 const NEG_INFINITY: &str = "-inf";
 
 // A decimal floating-point number sig * pow(10, exp).

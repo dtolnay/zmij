@@ -61,6 +61,9 @@ mod dtoa_test {
 
     #[test]
     fn inf() {
+        #[cfg(feature = "ecmascript")]
+        assert_eq!(dtoa(f64::INFINITY), "Infinity");
+        #[cfg(not(feature = "ecmascript"))]
         assert_eq!(dtoa(f64::INFINITY), "inf");
     }
 

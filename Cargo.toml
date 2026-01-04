@@ -23,6 +23,10 @@ opt-level = "1"
 rand = "0.9"
 ryu = "1"
 
+[features]
+# Use ECMAScript-style strings "Infinity" and "-Infinity" instead of "inf" and "-inf".
+ecmascript = []
+
 [target.'cfg(not(miri))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false }
 
