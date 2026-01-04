@@ -660,11 +660,11 @@ where
         // value = 5.0507837461e-27
         // next  = 5.0507837461000010e-27
         //
-        // c = integral.fractional' = 50507837461000003.1539873720539879 (value)
-        //                            50507837461000010.3286355093970513 (next)
-        //          scaled_half_ulp =                 3.5873240686715318
+        // c = integral.fractional' = 50507837461000003.153987... (value)
+        //                            50507837461000010.328635... (next)
+        //          scaled_half_ulp =                 3.587324...
         //
-        // fractional = 2840565642863009226, fractional' = fractional / 2**64
+        // fractional' = fractional / 2**64, fractional = 2840565642863009226
         //
         //      50507837461000000       c               upper     50507837461000010
         //              s              l|   L             |               S
