@@ -759,8 +759,8 @@ where
 
     let mut bin_sig = Float::get_sig(bits); // binary significand
     let mut regular = bin_sig != Float::SigType::from(0);
-    let subnormal = raw_exp == 0;
-    if subnormal {
+    let special = raw_exp == 0;
+    if special {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
                 *buffer = b'0';
@@ -777,7 +777,7 @@ where
     bin_sig ^= Float::IMPLICIT_BIT;
 
     // Here be 🐉s.
-    let mut dec = to_decimal(bin_sig, bin_exp, dec_exp, regular, subnormal);
+    let mut dec = to_decimal(bin_sig, bin_exp, dec_exp, regular, special);
     dec_exp = dec.exp;
 
     // Write significand.
