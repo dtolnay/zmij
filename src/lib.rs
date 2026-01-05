@@ -322,6 +322,14 @@ const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 // Writes a significand consisting of up to 17 decimal digits (16-17 for
 // normals) and removes trailing zeros.
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[cfg_attr(
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    target_feature(enable = "neon")
+)]
+#[cfg_attr(
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    target_feature(enable = "sse4.1")
+)]
 unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
@@ -368,48 +376,48 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         abbccddee -= a * hundred_million;
 
+        buffer = unsafe { write_if_nonzero(buffer, a as u32) };
+
+        let hundredmillions64: uint64x1_t = vcreate_u64(abbccddee | (ffgghhii << 32));
+        let hundredmillions32: int32x2_t = vreinterpret_s32_u64(hundredmillions64);
+
+        let high_10000: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
+            vreinterpret_u32_s32(vqdmulh_n_s32(hundredmillions32, c.multipliers32[0])),
+            9,
+        ));
+        let tenthousands: int32x2_t = vmla_n_s32(hundredmillions32, high_10000, c.multipliers32[1]);
+
+        let mut extended: int32x4_t =
+            vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(tenthousands), 0));
+
         unsafe {
-            buffer = write_if_nonzero(buffer, a as u32);
-
-            let hundredmillions64: uint64x1_t =
-                mem::transmute::<u64, uint64x1_t>(abbccddee | (ffgghhii << 32));
-            let hundredmillions32: int32x2_t = vreinterpret_s32_u64(hundredmillions64);
-
-            let high_10000: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
-                vreinterpret_u32_s32(vqdmulh_n_s32(hundredmillions32, c.multipliers32[0])),
-                9,
-            ));
-            let tenthousands: int32x2_t =
-                vmla_n_s32(hundredmillions32, high_10000, c.multipliers32[1]);
-
-            let mut extended: int32x4_t =
-                vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(tenthousands), 0));
-
             // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
             // MUL.
             asm!("/*{:v}*/", inout(vreg) extended);
-
-            let high_100: int32x4_t = vqdmulhq_n_s32(extended, c.multipliers32[2]);
-            let hundreds: int16x8_t =
-                vreinterpretq_s16_s32(vmlaq_n_s32(extended, high_100, c.multipliers32[3]));
-            let high_10: int16x8_t = vqdmulhq_n_s16(hundreds, c.multipliers16[0]);
-            let digits: uint8x16_t = vrev64q_u8(vreinterpretq_u8_s16(vmlaq_n_s16(
-                hundreds,
-                high_10,
-                c.multipliers16[1],
-            )));
-            let ascii: uint16x8_t = vaddq_u16(
-                vreinterpretq_u16_u8(digits),
-                vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
-            );
-
-            buffer.cast::<uint16x8_t>().write_unaligned(ascii);
-
-            let is_zero: uint16x8_t = vreinterpretq_u16_u8(vceqq_u8(digits, vdupq_n_u8(0)));
-            let zeros: u64 = !vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_zero, 4)), 0);
-
-            buffer.add(16 - (zeros.leading_zeros() as usize >> 2))
         }
+
+        let high_100: int32x4_t = vqdmulhq_n_s32(extended, c.multipliers32[2]);
+        let hundreds: int16x8_t =
+            vreinterpretq_s16_s32(vmlaq_n_s32(extended, high_100, c.multipliers32[3]));
+        let high_10: int16x8_t = vqdmulhq_n_s16(hundreds, c.multipliers16[0]);
+        let digits: uint8x16_t = vrev64q_u8(vreinterpretq_u8_s16(vmlaq_n_s16(
+            hundreds,
+            high_10,
+            c.multipliers16[1],
+        )));
+        let ascii: uint16x8_t = vaddq_u16(
+            vreinterpretq_u16_u8(digits),
+            vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
+        );
+
+        unsafe {
+            buffer.cast::<uint16x8_t>().write_unaligned(ascii);
+        }
+
+        let is_zero: uint16x8_t = vreinterpretq_u16_u8(vceqq_u8(digits, vdupq_n_u8(0)));
+        let zeros: u64 = !vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_zero, 4)), 0);
+
+        unsafe { buffer.add(16 - (zeros.leading_zeros() as usize >> 2)) }
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
@@ -421,48 +429,48 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         let a = abbccddee / 100_000_000;
         let bbccddee = abbccddee % 100_000_000;
 
+        buffer = unsafe { write_if_nonzero(buffer, a) };
+        // This BCD sequence is by Xiang JunBo. It works the same as the one
+        // in to_bc8 but the masking can be avoided by using vector entries
+        // of the right size, and in the last step a shift operation is
+        // avoided by increasing the shift to 32 bits and then using
+        // ...mulhi... to avoid the shift.
+        let x: __m128i = _mm_set_epi64x(i64::from(ffgghhii), i64::from(bbccddee));
+        let y: __m128i = _mm_add_epi64(
+            x,
+            _mm_mul_epu32(
+                _mm_set1_epi64x((1 << 32) - 10000),
+                _mm_srli_epi64(_mm_mul_epu32(x, _mm_set1_epi64x(109951163)), 40),
+            ),
+        );
+        let z: __m128i = _mm_add_epi64(
+            y,
+            _mm_mullo_epi32(
+                _mm_set1_epi32((1 << 16) - 100),
+                _mm_srli_epi32(_mm_mulhi_epu16(y, _mm_set1_epi16(5243)), 3),
+            ),
+        );
+        let big_endian_bcd: __m128i = _mm_add_epi64(
+            z,
+            _mm_mullo_epi16(
+                _mm_set1_epi16((1 << 8) - 10),
+                _mm_mulhi_epu16(z, _mm_set1_epi16(6554)),
+            ),
+        );
+        let bcd: __m128i = _mm_shuffle_epi8(
+            big_endian_bcd,
+            _mm_set_epi8(8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7),
+        );
+
+        // convert to ascii
+        let ascii0: __m128i = _mm_set1_epi8(b'0' as i8);
+        let digits = _mm_add_epi8(bcd, ascii0);
+
+        // determine number of leading zeros
+        let mask: u16 = !_mm_movemask_epi8(_mm_cmpeq_epi8(bcd, _mm_setzero_si128())) as u16;
+        let len = 64 - u64::from(mask).leading_zeros();
+
         unsafe {
-            buffer = write_if_nonzero(buffer, a);
-            // This BCD sequence is by Xiang JunBo. It works the same as the one
-            // in to_bc8 but the masking can be avoided by using vector entries
-            // of the right size, and in the last step a shift operation is
-            // avoided by increasing the shift to 32 bits and then using
-            // ...mulhi... to avoid the shift.
-            let x: __m128i = _mm_set_epi64x(i64::from(ffgghhii), i64::from(bbccddee));
-            let y: __m128i = _mm_add_epi64(
-                x,
-                _mm_mul_epu32(
-                    _mm_set1_epi64x((1 << 32) - 10000),
-                    _mm_srli_epi64(_mm_mul_epu32(x, _mm_set1_epi64x(109951163)), 40),
-                ),
-            );
-            let z: __m128i = _mm_add_epi64(
-                y,
-                _mm_mullo_epi32(
-                    _mm_set1_epi32((1 << 16) - 100),
-                    _mm_srli_epi32(_mm_mulhi_epu16(y, _mm_set1_epi16(5243)), 3),
-                ),
-            );
-            let big_endian_bcd: __m128i = _mm_add_epi64(
-                z,
-                _mm_mullo_epi16(
-                    _mm_set1_epi16((1 << 8) - 10),
-                    _mm_mulhi_epu16(z, _mm_set1_epi16(6554)),
-                ),
-            );
-            let bcd: __m128i = _mm_shuffle_epi8(
-                big_endian_bcd,
-                _mm_set_epi8(8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7),
-            );
-
-            // convert to ascii
-            let ascii0: __m128i = _mm_set1_epi8(b'0' as i8);
-            let digits = _mm_add_epi8(bcd, ascii0);
-
-            // determine number of leading zeros
-            let mask: u16 = !_mm_movemask_epi8(_mm_cmpeq_epi8(bcd, _mm_setzero_si128())) as u16;
-            let len = 64 - u64::from(mask).leading_zeros();
-
             // and save result
             _mm_storeu_si128(buffer.cast::<__m128i>(), digits);
 
