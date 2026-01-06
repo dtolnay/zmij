@@ -198,10 +198,18 @@ impl Pow10SignificandsTable {
         }
 
         unsafe {
+            #[cfg_attr(
+                not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
+                allow(unused_mut)
+            )]
             let mut hi = self
                 .data
                 .as_ptr()
                 .offset(Self::NUM_POW10 as isize + DEC_EXP_MIN as isize - 1);
+            #[cfg_attr(
+                not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
+                allow(unused_mut)
+            )]
             let mut lo = hi.add(Self::NUM_POW10);
 
             // Force indexed loads.
