@@ -638,8 +638,8 @@ where
         let digit = {
             // An optimization of integral % 10 by Dougall Johnson. Relies on
             // range calculation: (max_bin_sig << max_exp_shift) * max_u128.
-            let div10 = ((u128::from(integral.into()) * ((1 << 64) / 10 + 1)) >> 64) as u64;
-            let mut digit = integral.into() - div10 * 10;
+            let quo10 = ((u128::from(integral.into()) * ((1 << 64) / 10 + 1)) >> 64) as u64;
+            let mut digit = integral.into() - quo10 * 10;
             unsafe {
                 asm!("/*{0}*/", inout(reg) digit); // or it narrows to 32-bit and doesn't use madd/msub
             }
