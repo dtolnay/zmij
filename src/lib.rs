@@ -792,8 +792,8 @@ where
     buffer = unsafe { buffer.add(usize::from(Float::is_negative(bits))) };
 
     let mut bin_sig = Float::get_sig(bits); // binary significand
-    let mut regular = bin_sig != Float::SigType::from(0);
     let special = bin_exp == 0;
+    let regular = (bin_sig != Float::SigType::from(0)) | special; // | special slightly improves perf.
     if special {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
@@ -803,10 +803,8 @@ where
                 buffer.add(3)
             };
         }
-        bin_exp = 1;
         bin_sig |= Float::IMPLICIT_BIT;
-        // Setting regular is not redundant: it has a measurable perf impact.
-        regular = true;
+        bin_exp = 1;
     }
     bin_sig ^= Float::IMPLICIT_BIT;
     bin_exp -= Float::NUM_SIG_BITS + Float::EXP_BIAS;
