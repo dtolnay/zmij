@@ -13,7 +13,7 @@ repository = "https://github.com/dtolnay/zmij"
 rust-version = "1.68"
 
 [dependencies]
-no-panic = { version = "0.1", optional = true }
+no-panic = { version = "0.1.36", optional = true }
 
 [dev-dependencies]
 num-bigint = "0.4"
