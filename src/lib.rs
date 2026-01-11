@@ -358,7 +358,7 @@ static EXP_SHIFTS: ExpShiftTable = {
 // 10^dec_exp puts the decimal point in different bit positions:
 //   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
 //   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
-const unsafe fn compute_exp_shift<UInt>(bin_exp: i32, dec_exp: i32, regular: bool) -> i32
+unsafe fn compute_exp_shift<UInt>(bin_exp: i32, dec_exp: i32, regular: bool) -> i32
 where
     UInt: traits::UInt,
 {
