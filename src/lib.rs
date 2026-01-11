@@ -480,20 +480,24 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
         struct ToStringConstants {
             mul_const: u64,
             hundred_million: u64,
-            multipliers32: [i32; 4],
-            multipliers16: [i16; 8],
+            multipliers32: int32x4_t,
+            multipliers16: int16x8_t,
         }
 
         static CONSTANTS: ToStringConstants = ToStringConstants {
             mul_const: 0xabcc77118461cefd,
             hundred_million: 100000000,
-            multipliers32: [
-                DIV10K_SIG as i32,
-                NEG10K,
-                (DIV100_SIG << 12) as i32,
-                NEG100 as i32,
-            ],
-            multipliers16: [0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0],
+            multipliers32: unsafe {
+                mem::transmute::<[i32; 4], int32x4_t>([
+                    DIV10K_SIG as i32,
+                    NEG10K,
+                    (DIV100_SIG << 12) as i32,
+                    NEG100 as i32,
+                ])
+            },
+            multipliers16: unsafe {
+                mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
+            },
         };
 
         let mut c = ptr::addr_of!(CONSTANTS);
@@ -529,11 +533,17 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
             let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
 
             let bbcc_ffgg: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
-                vreinterpret_u32_s32(vqdmulh_n_s32(bbccddee_ffgghhii, c.multipliers32[0])),
+                vreinterpret_u32_s32(vqdmulh_n_s32(
+                    bbccddee_ffgghhii,
+                    mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
+                )),
                 9,
             ));
-            let ddee_bbcc_hhii_ffgg_32: int32x2_t =
-                vmla_n_s32(bbccddee_ffgghhii, bbcc_ffgg, c.multipliers32[1]);
+            let ddee_bbcc_hhii_ffgg_32: int32x2_t = vmla_n_s32(
+                bbccddee_ffgghhii,
+                bbcc_ffgg,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
+            );
 
             let mut ddee_bbcc_hhii_ffgg: int32x4_t =
                 vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
@@ -542,17 +552,23 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64) -> *mut u8 {
             // MUL.
             asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
 
-            let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(ddee_bbcc_hhii_ffgg, c.multipliers32[2]);
+            let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
+                ddee_bbcc_hhii_ffgg,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
+            );
             let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
                 ddee_bbcc_hhii_ffgg,
                 dd_bb_hh_ff,
-                c.multipliers32[3],
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
             ));
-            let high_10s: int16x8_t = vqdmulhq_n_s16(ee_dd_cc_bb_ii_hh_gg_ff, c.multipliers16[0]);
+            let high_10s: int16x8_t = vqdmulhq_n_s16(
+                ee_dd_cc_bb_ii_hh_gg_ff,
+                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
+            );
             let digits: uint8x16_t = vrev64q_u8(vreinterpretq_u8_s16(vmlaq_n_s16(
                 ee_dd_cc_bb_ii_hh_gg_ff,
                 high_10s,
-                c.multipliers16[1],
+                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
             )));
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
