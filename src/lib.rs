@@ -101,17 +101,20 @@ struct uint128 {
     lo: u64,
 }
 
+// Use umul128_hi64 for division.
+const USE_UMUL128_HI64: bool = cfg!(target_vendor = "apple");
+
 // Computes 128-bit result of multiplication of two 64-bit unsigned integers.
 const fn umul128(x: u64, y: u64) -> u128 {
     x as u128 * y as u128
 }
 
-const fn umul128_upper64(x: u64, y: u64) -> u64 {
+const fn umul128_hi64(x: u64, y: u64) -> u64 {
     (umul128(x, y) >> 64) as u64
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn umul192_upper128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
+fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     let p = umul128(x_hi, y);
     let lo = (p as u64).wrapping_add((umul128(x_lo, y) >> 64) as u64);
     uint128 {
@@ -120,16 +123,16 @@ fn umul192_upper128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     }
 }
 
-// Computes upper 64 bits of multiplication of x and y, discards the least
+// Computes high 64 bits of multiplication of x and y, discards the least
 // significant bit and rounds to odd, where x = uint128_t(x_hi << 64) | x_lo.
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn umul_upper_inexact_to_odd<UInt>(x_hi: u64, x_lo: u64, y: UInt) -> UInt
+fn umulhi_inexact_to_odd<UInt>(x_hi: u64, x_lo: u64, y: UInt) -> UInt
 where
     UInt: traits::UInt,
 {
     let num_bits = mem::size_of::<UInt>() * 8;
     if num_bits == 64 {
-        let p = umul192_upper128(x_hi, x_lo, y.into());
+        let p = umul192_hi128(x_hi, x_lo, y.into());
         UInt::truncate(p.hi | u64::from((p.lo >> 1) != 0))
     } else {
         let p = (umul128(x_hi, y.into()) >> 32) as u64;
@@ -264,12 +267,12 @@ static POW10_SIGNIFICANDS: Pow10SignificandsTable = {
             data[i * 2 + 1] = current.w1;
         }
 
-        let h0: u64 = umul128_upper64(current.w0, ten);
-        let h1: u64 = umul128_upper64(current.w1, ten);
+        let h0: u64 = umul128_hi64(current.w0, ten);
+        let h1: u64 = umul128_hi64(current.w1, ten);
 
         let c0: u64 = h0.wrapping_add(current.w1.wrapping_mul(ten));
         let c1: u64 = ((c0 < h0) as u64 + h1).wrapping_add(current.w2.wrapping_mul(ten));
-        let c2: u64 = (c1 < h1) as u64 + umul128_upper64(current.w2, ten); // dodgy carry
+        let c2: u64 = (c1 < h1) as u64 + umul128_hi64(current.w2, ten); // dodgy carry
 
         // normalise
         if (c2 >> 63) != 0 {
@@ -747,8 +750,8 @@ where
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     // An optimization from yy by Yaoyuan Guo:
     while regular && !subnormal {
-        let dec_exp = if cfg!(target_vendor = "apple") {
-            ((bin_exp as u128 * 0x4d10500000000000) >> 64) as i32
+        let dec_exp = if USE_UMUL128_HI64 {
+            umul128_hi64(bin_exp as u64, 0x4d10500000000000) as i32
         } else {
             compute_dec_exp(bin_exp as i32, true)
         };
@@ -758,7 +761,7 @@ where
         let integral; // integral part of bin_sig * pow10
         let fractional; // fractional part of bin_sig * pow10
         if num_bits == 64 {
-            let p = umul192_upper128(pow10.hi, pow10.lo, (bin_sig << exp_shift).into());
+            let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << exp_shift).into());
             integral = UInt::truncate(p.hi);
             fractional = p.lo;
         } else {
@@ -866,9 +869,9 @@ where
     // by multiplying them by the power of 10 and applying modified rounding.
     let lsb = bin_sig & UInt::from(1);
     let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
-    let lower = umul_upper_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
+    let lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
     let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
-    let upper = umul_upper_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
+    let upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
 
     // The idea of using a single shorter candidate is by Cassio Neri.
     // It is less or equal to the upper bound by construction.
@@ -883,7 +886,7 @@ where
         );
     }
 
-    let scaled_sig = umul_upper_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
+    let scaled_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
     let longer_below = scaled_sig >> BOUND_SHIFT;
     let longer_above = longer_below + UInt::from(1);
 
@@ -1018,12 +1021,11 @@ where
         }
     }
 
-    let digit = if cfg!(target_vendor = "apple") {
-        // Use mulhi to divide by 100.
-        ((dec_exp as u128 * 0x290000000000000) >> 64) as u32
+    // digit = dec_exp / 100
+    let digit = if USE_UMUL128_HI64 {
+        umul128_hi64(dec_exp as u64, 0x290000000000000) as u32
     } else {
-        // div100_exp=19 is faster or equal to 12 even for 3 digits.
-        (dec_exp as u32 * DIV100_SIG) >> DIV100_EXP // value / 100
+        (dec_exp as u32 * DIV100_SIG) >> DIV100_EXP
     };
     unsafe {
         *buffer = b'0' + digit as u8;
