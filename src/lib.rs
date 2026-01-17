@@ -66,6 +66,8 @@
     clippy::wildcard_imports
 )]
 
+#[cfg(zmij_no_select_unpredictable)]
+mod hint;
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 mod stdarch_x86;
 #[cfg(test)]
@@ -864,9 +866,6 @@ where
         let longer = (integral.into() + u64::from(fractional >= HALF_ULP)) as i64;
         let use_shorter = scaled_sig_mod10 <= scaled_half_ulp || round_up;
         return dec_fp {
-            #[cfg(zmij_no_select_unpredictable)]
-            sig: if use_shorter { shorter } else { longer },
-            #[cfg(not(zmij_no_select_unpredictable))]
             sig: hint::select_unpredictable(use_shorter, shorter, longer),
             exp: dec_exp,
         };
