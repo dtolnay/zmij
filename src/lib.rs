@@ -469,7 +469,9 @@ unsafe fn write8(buffer: *mut u8, value: u64) {
 }
 
 // Writes a significand consisting of up to 17 decimal digits (16-17 for
-// normals) and removes trailing zeros.
+// normals) and removes trailing zeros. The significant digits start from
+// buffer[1]. buffer[0] may contain '0' after this function if the significand
+// has length 16.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool) -> *mut u8 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
@@ -528,7 +530,8 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
-        buffer = unsafe { write_if(buffer, a as u32, has17digits) };
+        let start = unsafe { buffer.add(1) };
+        buffer = unsafe { write_if(start, a as u32, has17digits) };
 
         unsafe {
             let ffgghhii_bbccddee_64: uint64x1_t =
@@ -591,12 +594,26 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
     {
         use crate::stdarch_x86::*;
 
-        let abbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
-        let a = abbccddee / 100_000_000;
-        let bbccddee = abbccddee % 100_000_000;
+        // Divide by ten with a 64bit shift. Note that (1 << 63) / 5 == (1 << 64) / 10
+        // but doesn't need an intermediate int128.
+        let digits_16 = if USE_UMUL128_HI64 {
+            umul128_hi64((1 << 63) / 5 + 1, value)
+        } else {
+            value / 10
+        };
+        let last_digit = (value - digits_16 * 10) as u32;
 
-        buffer = unsafe { write_if(buffer, a, has17digits) };
+        // We always write 17 digits into the buffer, but the first one can be
+        // zero. buffer points to the second place in the output buffer to allow
+        // for the insertion of the decimal point, and so we can use the first
+        // place as scratch.
+        buffer = unsafe { buffer.add(usize::from(has17digits)) };
+        unsafe {
+            *buffer.add(16) = last_digit as u8 + b'0';
+        }
+
+        let abcdefgh = (digits_16 / 100_000_000) as u32;
+        let ijklmnop = (digits_16 % 100_000_000) as u32;
 
         #[repr(C, align(64))]
         struct C {
@@ -635,7 +652,7 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
 
         // The BCD sequences are based on ones provided by Xiang JunBo.
         unsafe {
-            let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
+            let x: __m128i = _mm_set_epi64x(i64::from(abcdefgh), i64::from(ijklmnop));
             let y: __m128i = _mm_add_epi64(
                 x,
                 _mm_mul_epu32(
@@ -674,10 +691,15 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
             // determine number of leading zeros
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
             let mask = _mm_movemask_epi8(mask128) as u16;
+            // We don't need a zero-check here: if the mask were zero, either
+            // the significand is zero which is handled elsewhere or the only
+            // non-zero digit is the last digit which we factored off. But in
+            // that case the number would be printed with a different exponent
+            // that shifts the last digit into the first position.
             let len = 32 - u32::from(mask).leading_zeros();
 
             _mm_storeu_si128(buffer.cast::<__m128i>(), digits);
-            buffer.add(len as usize)
+            buffer.add(if last_digit != 0 { 17 } else { len as usize })
         }
     }
 
@@ -686,10 +708,11 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
     {
+        let start = unsafe { buffer.add(1) };
         // Each digits is denoted by a letter so value is abbccddeeffgghhii.
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        buffer = unsafe { write_if(buffer, abbccddee / 100_000_000, has17digits) };
+        buffer = unsafe { write_if(start, abbccddee / 100_000_000, has17digits) };
         let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
         unsafe {
             write8(buffer, bcd | ZEROS);
@@ -953,7 +976,7 @@ where
     let end = if Float::NUM_BITS == 64 {
         let has17digits = dec.sig >= 10_000_000_000_000_000;
         dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(has17digits);
-        unsafe { write_significand17(buffer.add(1), dec.sig as u64, has17digits) }
+        unsafe { write_significand17(buffer, dec.sig as u64, has17digits) }
     } else {
         if dec.sig < 10_000_000 {
             dec.sig *= 10;
