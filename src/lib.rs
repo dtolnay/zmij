@@ -249,8 +249,8 @@ static POW10_SIGNIFICANDS: Pow10SignificandsTable = {
         w2: u64, // most significant
     }
 
-    // first element, rounded up to cancel out rounding down in the
-    // multiplication, and minimise significant bits
+    // First element, rounded up to cancel out rounding down in the
+    // multiplication, and minimize significant bits.
     let mut current = uint192 {
         w0: 0xe000000000000000,
         w1: 0x25e8e89c13bb0f7a,
@@ -433,6 +433,9 @@ const NEG100: u32 = (1 << 16) - 100;
 const DIV10_EXP: i32 = 10;
 const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
 const NEG10: u32 = (1 << 8) - 10;
+// (1 << 63) / 5 == (1 << 64) / 10 without an intermediate int128.
+#[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
+const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
@@ -594,10 +597,8 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
     {
         use crate::stdarch_x86::*;
 
-        // Divide by ten with a 64bit shift. Note that (1 << 63) / 5 == (1 <<
-        // 64) / 10 but doesn't need an intermediate int128.
         let digits_16 = if USE_UMUL128_HI64 {
-            umul128_hi64((1 << 63) / 5 + 1, value)
+            umul128_hi64(value, DIV10_SIG64)
         } else {
             value / 10
         };
@@ -803,8 +804,7 @@ where
         let digit = {
             // An optimization of integral % 10 by Dougall Johnson. Relies on
             // range calculation: (max_bin_sig << max_exp_shift) * max_u128.
-            let div10_sig = (1 << 63) / 5 + 1;
-            let mut digit = integral.into() - umul128_hi64(integral.into(), div10_sig) * 10;
+            let mut digit = integral.into() - umul128_hi64(integral.into(), DIV10_SIG64) * 10;
             // or it narrows to 32-bit and doesn't use madd/msub
             unsafe {
                 asm!("/*{0}*/", inout(reg) digit);
