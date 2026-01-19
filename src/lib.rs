@@ -163,7 +163,7 @@ trait FloatTraits: traits::Float {
     }
 
     fn get_exp(bits: Self::SigType) -> i64 {
-        (bits >> Self::NUM_SIG_BITS).into() as i64 & i64::from(Self::EXP_MASK)
+        (bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
     }
 }
 
