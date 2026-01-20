@@ -768,18 +768,92 @@ where
     dec
 }
 
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_decimal_schubfach<const SUBNORMAL: bool, UInt>(
+    bin_sig: UInt,
+    bin_exp: i64,
+    regular: bool,
+) -> dec_fp
+where
+    UInt: traits::UInt,
+{
+    let num_bits = mem::size_of::<UInt>() as i32 * 8;
+    let dec_exp = compute_dec_exp(bin_exp as i32, regular);
+    let exp_shift = unsafe { compute_exp_shift::<UInt, false>(bin_exp as i32, dec_exp) };
+    let mut pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
+
+    // Fallback to Schubfach to guarantee correctness in boundary cases. This
+    // requires switching to strict overestimates of powers of 10.
+    if num_bits == 64 {
+        pow10.lo += 1;
+    } else {
+        pow10.hi += 1;
+    }
+
+    // Shift the significand so that boundaries are integer.
+    const BOUND_SHIFT: u32 = 2;
+    let bin_sig_shifted = bin_sig << BOUND_SHIFT;
+
+    // Compute the estimates of lower and upper bounds of the rounding interval
+    // by multiplying them by the power of 10 and applying modified rounding.
+    let lsb = bin_sig & UInt::from(1);
+    let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
+    let lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
+    let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
+    let upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
+
+    // The idea of using a single shorter candidate is by Cassio Neri.
+    // It is less or equal to the upper bound by construction.
+    let shorter = UInt::from(10) * ((upper >> BOUND_SHIFT) / UInt::from(10));
+    if (shorter << BOUND_SHIFT) >= lower {
+        return normalize::<UInt>(
+            dec_fp {
+                sig: shorter.into() as i64,
+                exp: dec_exp,
+            },
+            SUBNORMAL,
+        );
+    }
+
+    let scaled_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
+    let longer_below = scaled_sig >> BOUND_SHIFT;
+    let longer_above = longer_below + UInt::from(1);
+
+    // Pick the closest of longer_below and longer_above and check if it's in
+    // the rounding interval.
+    let cmp = scaled_sig
+        .wrapping_sub((longer_below + longer_above) << 1)
+        .to_signed();
+    let below_closer = cmp < UInt::from(0).to_signed()
+        || (cmp == UInt::from(0).to_signed() && (longer_below & UInt::from(1)) == UInt::from(0));
+    let below_in = (longer_below << BOUND_SHIFT) >= lower;
+    let dec_sig = if below_closer & below_in {
+        longer_below
+    } else {
+        longer_above
+    };
+    normalize::<UInt>(
+        dec_fp {
+            sig: dec_sig.into() as i64,
+            exp: dec_exp,
+        },
+        SUBNORMAL,
+    )
+}
+
+// Here be 🐉s.
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
 // representation, where bin_exp = raw_exp - num_sig_bits - exp_bias.
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_decimal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool, subnormal: bool) -> dec_fp
+fn to_decimal_normal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> dec_fp
 where
     Float: FloatTraits,
     UInt: traits::UInt,
 {
-    let mut bin_exp = raw_exp - i64::from(Float::NUM_SIG_BITS) - i64::from(Float::EXP_BIAS);
+    let bin_exp = raw_exp - i64::from(Float::NUM_SIG_BITS) - i64::from(Float::EXP_BIAS);
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     // An optimization from yy by Yaoyuan Guo:
-    while regular && !subnormal {
+    while regular {
         let dec_exp = if USE_UMUL128_HI64 {
             umul128_hi64(bin_exp as u64, 0x4d10500000000000) as i32
         } else {
@@ -885,69 +959,7 @@ where
             exp: dec_exp,
         };
     }
-    bin_exp += i64::from(subnormal);
-
-    let dec_exp = compute_dec_exp(bin_exp as i32, regular);
-    let exp_shift = unsafe { compute_exp_shift::<UInt, false>(bin_exp as i32, dec_exp) };
-    let mut pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
-
-    // Fallback to Schubfach to guarantee correctness in boundary cases. This
-    // requires switching to strict overestimates of powers of 10.
-    if num_bits == 64 {
-        pow10.lo += 1;
-    } else {
-        pow10.hi += 1;
-    }
-
-    // Shift the significand so that boundaries are integer.
-    const BOUND_SHIFT: u32 = 2;
-    let bin_sig_shifted = bin_sig << BOUND_SHIFT;
-
-    // Compute the estimates of lower and upper bounds of the rounding interval
-    // by multiplying them by the power of 10 and applying modified rounding.
-    let lsb = bin_sig & UInt::from(1);
-    let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
-    let lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
-    let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
-    let upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
-
-    // The idea of using a single shorter candidate is by Cassio Neri.
-    // It is less or equal to the upper bound by construction.
-    let shorter = UInt::from(10) * ((upper >> BOUND_SHIFT) / UInt::from(10));
-    if (shorter << BOUND_SHIFT) >= lower {
-        return normalize::<UInt>(
-            dec_fp {
-                sig: shorter.into() as i64,
-                exp: dec_exp,
-            },
-            subnormal,
-        );
-    }
-
-    let scaled_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
-    let longer_below = scaled_sig >> BOUND_SHIFT;
-    let longer_above = longer_below + UInt::from(1);
-
-    // Pick the closest of longer_below and longer_above and check if it's in
-    // the rounding interval.
-    let cmp = scaled_sig
-        .wrapping_sub((longer_below + longer_above) << 1)
-        .to_signed();
-    let below_closer = cmp < UInt::from(0).to_signed()
-        || (cmp == UInt::from(0).to_signed() && (longer_below & UInt::from(1)) == UInt::from(0));
-    let below_in = (longer_below << BOUND_SHIFT) >= lower;
-    let dec_sig = if below_closer & below_in {
-        longer_below
-    } else {
-        longer_above
-    };
-    normalize::<UInt>(
-        dec_fp {
-            sig: dec_sig.into() as i64,
-            exp: dec_exp,
-        },
-        subnormal,
-    )
+    to_decimal_schubfach::<false, UInt>(bin_sig, bin_exp, regular)
 }
 
 /// Writes the shortest correctly rounded decimal representation of `value` to
@@ -960,16 +972,14 @@ where
     let bits = value.to_bits();
     // It is beneficial to extract exponent and significand early.
     let bin_exp = Float::get_exp(bits); // binary exponent
-    let mut bin_sig = Float::get_sig(bits); // binary significand
+    let bin_sig = Float::get_sig(bits); // binary significand
 
     unsafe {
         *buffer = b'-';
     }
     buffer = unsafe { buffer.add(usize::from(Float::is_negative(bits))) };
 
-    let regular = bin_sig != Float::SigType::from(0);
-    let subnormal = bin_exp == 0;
-    if bin_exp == 0 {
+    let mut dec = if bin_exp == 0 {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
                 *buffer = b'0';
@@ -978,12 +988,15 @@ where
                 buffer.add(3)
             };
         }
-        bin_sig |= Float::IMPLICIT_BIT;
-    }
-    bin_sig ^= Float::IMPLICIT_BIT;
-
-    // Here be 🐉s.
-    let mut dec = to_decimal::<Float, Float::SigType>(bin_sig, bin_exp, regular, subnormal);
+        let exp_offset = Float::NUM_SIG_BITS + Float::EXP_BIAS;
+        to_decimal_schubfach::<true, Float::SigType>(bin_sig, i64::from(1 - exp_offset), true)
+    } else {
+        to_decimal_normal::<Float, Float::SigType>(
+            bin_sig | Float::IMPLICIT_BIT,
+            bin_exp,
+            bin_sig != Float::SigType::from(0),
+        )
+    };
     let mut dec_exp = dec.exp;
 
     // Write significand.
