@@ -510,6 +510,30 @@ const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
 // has length 16.
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool) -> *mut u8 {
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    )))]
+    {
+        let start = unsafe { buffer.add(1) };
+        // Each digits is denoted by a letter so value is abbccddeeffgghhii.
+        let abbccddee = (value / 100_000_000) as u32;
+        let ffgghhii = (value % 100_000_000) as u32;
+        buffer = unsafe { write_if(start, abbccddee / 100_000_000, has17digits) };
+        let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
+        unsafe {
+            write8(buffer, bcd | ZEROS);
+        }
+        if ffgghhii == 0 {
+            return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
+        }
+        let bcd = to_bcd8(u64::from(ffgghhii));
+        unsafe {
+            write8(buffer.add(8), bcd | ZEROS);
+            buffer.add(8).add(count_trailing_nonzeros(bcd))
+        }
+    }
+
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // An optimized version for NEON by Dougall Johnson.
@@ -755,30 +779,6 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
 
             _mm_storeu_si128(buffer.cast::<__m128i>(), digits);
             buffer.add(if last_digit != 0 { 17 } else { len })
-        }
-    }
-
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-    )))]
-    {
-        let start = unsafe { buffer.add(1) };
-        // Each digits is denoted by a letter so value is abbccddeeffgghhii.
-        let abbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
-        buffer = unsafe { write_if(start, abbccddee / 100_000_000, has17digits) };
-        let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
-        unsafe {
-            write8(buffer, bcd | ZEROS);
-        }
-        if ffgghhii == 0 {
-            return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
-        }
-        let bcd = to_bcd8(u64::from(ffgghhii));
-        unsafe {
-            write8(buffer.add(8), bcd | ZEROS);
-            buffer.add(8).add(count_trailing_nonzeros(bcd))
         }
     }
 }
