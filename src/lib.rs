@@ -77,6 +77,8 @@ mod traits;
 
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+use core::arch::x86_64::__m128i;
 #[cfg(not(zmij_no_select_unpredictable))]
 use core::hint;
 use core::mem::{self, MaybeUninit};
@@ -475,6 +477,77 @@ unsafe fn write8(buffer: *mut u8, value: u64) {
     }
 }
 
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+const fn splat64(x: u64) -> __m128i {
+    unsafe { mem::transmute::<[u64; 2], __m128i>([x, x]) }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+const fn splat32(x: u32) -> __m128i {
+    splat64(((x as u64) << 32) | x as u64)
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+const fn splat16(x: u16) -> __m128i {
+    splat32(((x as u32) << 16) | x as u32)
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
+    ((h as u64) << 56)
+        | ((g as u64) << 48)
+        | ((f as u64) << 40)
+        | ((e as u64) << 32)
+        | ((d as u64) << 24)
+        | ((c as u64) << 16)
+        | ((b as u64) << 8)
+        | a as u64
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[repr(C, align(64))]
+struct Consts {
+    div10k: __m128i,
+    neg10k: __m128i,
+    div100: __m128i,
+    div10: __m128i,
+    #[cfg(target_feature = "sse4.1")]
+    neg100: __m128i,
+    #[cfg(target_feature = "sse4.1")]
+    neg10: __m128i,
+    #[cfg(target_feature = "sse4.1")]
+    bswap: __m128i,
+    #[cfg(not(target_feature = "sse4.1"))]
+    hundred: __m128i,
+    #[cfg(not(target_feature = "sse4.1"))]
+    moddiv10: __m128i,
+    zeros: __m128i,
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+static CONSTS: Consts = Consts {
+    div10k: splat64(DIV10K_SIG as u64),
+    neg10k: splat64(NEG10K as u64),
+    div100: splat32(DIV100_SIG),
+    div10: splat16(((1u32 << 16) / 10 + 1) as u16),
+    #[cfg(target_feature = "sse4.1")]
+    neg100: splat32(NEG100),
+    #[cfg(target_feature = "sse4.1")]
+    neg10: splat16((1 << 8) - 10),
+    #[cfg(target_feature = "sse4.1")]
+    bswap: unsafe {
+        mem::transmute::<[u64; 2], __m128i>([
+            pack8(15, 14, 13, 12, 11, 10, 9, 8),
+            pack8(7, 6, 5, 4, 3, 2, 1, 0),
+        ])
+    },
+    #[cfg(not(target_feature = "sse4.1"))]
+    hundred: splat32(100),
+    #[cfg(not(target_feature = "sse4.1"))]
+    moddiv10: splat16(10 * (1 << 8) - 1),
+    zeros: splat64(ZEROS),
+};
+
 // Writes a significand consisting of up to 17 decimal digits (16-17 for
 // normals) and removes trailing zeros. The significant digits start from
 // buffer[1]. buffer[0] may contain '0' after this function if the significand
@@ -621,52 +694,28 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
         let abcdefgh = (digits_16 / 100_000_000) as u32;
         let ijklmnop = (digits_16 % 100_000_000) as u32;
 
-        #[repr(C, align(64))]
-        struct C {
-            div10k: __m128i,
-            neg10k: __m128i,
-            div100: __m128i,
-            div10: __m128i,
-            #[cfg(target_feature = "sse4.1")]
-            neg100: __m128i,
-            #[cfg(target_feature = "sse4.1")]
-            neg10: __m128i,
-            #[cfg(target_feature = "sse4.1")]
-            bswap: __m128i,
-            #[cfg(not(target_feature = "sse4.1"))]
-            hundred: __m128i,
-            #[cfg(not(target_feature = "sse4.1"))]
-            moddiv10: __m128i,
-            zeros: __m128i,
-        }
-
-        static C: C = C {
-            div10k: _mm_set1_epi64x(DIV10K_SIG as i64),
-            neg10k: _mm_set1_epi64x(NEG10K as i64),
-            div100: _mm_set1_epi32(DIV100_SIG as i32),
-            div10: _mm_set1_epi16(((1i32 << 16) / 10 + 1) as i16),
-            #[cfg(target_feature = "sse4.1")]
-            neg100: _mm_set1_epi32(NEG100 as i32),
-            #[cfg(target_feature = "sse4.1")]
-            neg10: _mm_set1_epi16((1 << 8) - 10),
-            #[cfg(target_feature = "sse4.1")]
-            bswap: _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-            #[cfg(not(target_feature = "sse4.1"))]
-            hundred: _mm_set1_epi32(100),
-            #[cfg(not(target_feature = "sse4.1"))]
-            moddiv10: _mm_set1_epi16(10 * (1 << 8) - 1),
-            zeros: _mm_set1_epi64x(ZEROS as i64),
-        };
+        let div10k = unsafe { _mm_load_si128(&CONSTS.div10k) };
+        let neg10k = unsafe { _mm_load_si128(&CONSTS.neg10k) };
+        let div100 = unsafe { _mm_load_si128(&CONSTS.div100) };
+        let div10 = unsafe { _mm_load_si128(&CONSTS.div10) };
+        #[cfg(target_feature = "sse4.1")]
+        let neg100 = unsafe { _mm_load_si128(&CONSTS.neg100) };
+        #[cfg(target_feature = "sse4.1")]
+        let neg10 = unsafe { _mm_load_si128(&CONSTS.neg10) };
+        #[cfg(target_feature = "sse4.1")]
+        let bswap = unsafe { _mm_load_si128(&CONSTS.bswap) };
+        #[cfg(not(target_feature = "sse4.1"))]
+        let hundred = unsafe { _mm_load_si128(&CONSTS.hundred) };
+        #[cfg(not(target_feature = "sse4.1"))]
+        let moddiv10 = unsafe { _mm_load_si128(&CONSTS.moddiv10) };
+        let zeros = unsafe { _mm_load_si128(&CONSTS.zeros) };
 
         // The BCD sequences are based on ones provided by Xiang JunBo.
         unsafe {
             let x: __m128i = _mm_set_epi64x(i64::from(abcdefgh), i64::from(ijklmnop));
             let y: __m128i = _mm_add_epi64(
                 x,
-                _mm_mul_epu32(
-                    C.neg10k,
-                    _mm_srli_epi64(_mm_mul_epu32(x, C.div10k), DIV10K_EXP),
-                ),
+                _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
             );
 
             #[cfg(target_feature = "sse4.1")]
@@ -674,27 +723,27 @@ unsafe fn write_significand17(mut buffer: *mut u8, value: u64, has17digits: bool
                 // _mm_mullo_epi32 is SSE 4.1
                 let z: __m128i = _mm_add_epi64(
                     y,
-                    _mm_mullo_epi32(C.neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, C.div100), 3)),
+                    _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
                 );
                 let big_endian_bcd: __m128i =
-                    _mm_add_epi64(z, _mm_mullo_epi16(C.neg10, _mm_mulhi_epu16(z, C.div10)));
+                    _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)));
                 // SSSE3
-                _mm_shuffle_epi8(big_endian_bcd, C.bswap)
+                _mm_shuffle_epi8(big_endian_bcd, bswap)
             };
 
             #[cfg(not(target_feature = "sse4.1"))]
             let bcd: __m128i = {
-                let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, C.div100), 3);
-                let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, C.hundred));
+                let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
+                let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
                 let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
                 let bcd_shuffled: __m128i = _mm_sub_epi16(
                     _mm_slli_epi16(z, 8),
-                    _mm_mullo_epi16(C.moddiv10, _mm_mulhi_epu16(z, C.div10)),
+                    _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
                 );
                 _mm_shuffle_epi32(bcd_shuffled, _MM_SHUFFLE(0, 1, 2, 3))
             };
 
-            let digits = _mm_or_si128(bcd, C.zeros);
+            let digits = _mm_or_si128(bcd, zeros);
 
             // determine number of leading zeros
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
