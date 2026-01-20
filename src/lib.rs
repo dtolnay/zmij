@@ -432,8 +432,6 @@ const NEG100: u32 = (1 << 16) - 100;
 const DIV10_EXP: i32 = 10;
 const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
 const NEG10: u32 = (1 << 8) - 10;
-// (1 << 63) / 5 == (1 << 64) / 10 without an intermediate int128.
-const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
@@ -652,8 +650,7 @@ unsafe fn write_significand17(
     {
         use crate::stdarch_x86::*;
 
-        let digits_16 = value_div10 as u64;
-        let last_digit = (value - digits_16 * 10) as u32;
+        let last_digit = (value - value_div10 as u64 * 10) as u32;
 
         // We always write 17 digits into the buffer, but the first one can be
         // zero. buffer points to the second place in the output buffer to allow
@@ -664,8 +661,8 @@ unsafe fn write_significand17(
             *buffer.add(16) = last_digit as u8 + b'0';
         }
 
-        let abcdefgh = (digits_16 / 100_000_000) as u32;
-        let ijklmnop = (digits_16 % 100_000_000) as u32;
+        let abcdefgh = (value_div10 / 100_000_000) as u32;
+        let ijklmnop = (value_div10 % 100_000_000) as u32;
 
         #[repr(C, align(64))]
         struct Consts {
@@ -936,6 +933,8 @@ where
 
         // An optimization of integral % 10 by Dougall Johnson. Relies on range
         // calculation: (max_bin_sig << max_exp_shift) * max_u128.
+        // (1 << 63) / 5 == (1 << 64) / 10 without an intermediate int128.
+        const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
         let div10 = umul128_hi64(integral.into(), DIV10_SIG64);
         #[allow(unused_mut)]
         let mut digit = integral.into() - div10 * 10;
