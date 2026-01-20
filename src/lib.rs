@@ -151,6 +151,7 @@ trait FloatTraits: traits::Float {
     const NUM_EXP_BITS: i32 = Self::NUM_BITS - Self::NUM_SIG_BITS - 1;
     const EXP_MASK: i32 = (1 << Self::NUM_EXP_BITS) - 1;
     const EXP_BIAS: i32 = (1 << (Self::NUM_EXP_BITS - 1)) - 1;
+    const EXP_OFFSET: i32 = Self::EXP_BIAS + Self::NUM_SIG_BITS;
 
     type SigType: traits::UInt;
     const IMPLICIT_BIT: Self::SigType;
@@ -335,7 +336,6 @@ struct ExpShiftTable {
 impl ExpShiftTable {
     const ENABLE: bool = true;
     const NUM_EXPS: i32 = f64::EXP_MASK + 1;
-    const OFFSET: i32 = f64::NUM_SIG_BITS + f64::EXP_BIAS;
 }
 
 static EXP_SHIFTS: ExpShiftTable = {
@@ -348,7 +348,7 @@ static EXP_SHIFTS: ExpShiftTable = {
     if ExpShiftTable::ENABLE {
         let mut raw_exp = 0;
         while raw_exp < ExpShiftTable::NUM_EXPS {
-            let mut bin_exp = raw_exp - ExpShiftTable::OFFSET;
+            let mut bin_exp = raw_exp - f64::EXP_OFFSET;
             if raw_exp == 0 {
                 bin_exp += 1;
             }
@@ -381,7 +381,7 @@ where
             *EXP_SHIFTS
                 .data
                 .as_ptr()
-                .add((bin_exp + ExpShiftTable::OFFSET) as usize)
+                .add((bin_exp + f64::EXP_OFFSET) as usize)
         }
     } else {
         do_compute_exp_shift(bin_exp, dec_exp)
@@ -891,14 +891,14 @@ where
 
 // Here be 🐉s.
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
-// representation, where bin_exp = raw_exp - num_sig_bits - exp_bias.
+// representation, where bin_exp = raw_exp - exp_offset.
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_decimal_normal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> dec_fp
 where
     Float: FloatTraits,
     UInt: traits::UInt,
 {
-    let bin_exp = raw_exp - i64::from(Float::NUM_SIG_BITS) - i64::from(Float::EXP_BIAS);
+    let bin_exp = raw_exp - i64::from(Float::EXP_OFFSET);
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     // An optimization from yy by Yaoyuan Guo:
     while regular {
@@ -1036,8 +1036,11 @@ where
                 buffer.add(3)
             };
         }
-        let exp_offset = Float::NUM_SIG_BITS + Float::EXP_BIAS;
-        to_decimal_schubfach::<true, Float::SigType>(bin_sig, i64::from(1 - exp_offset), true)
+        to_decimal_schubfach::<true, Float::SigType>(
+            bin_sig,
+            i64::from(1 - Float::EXP_OFFSET),
+            true,
+        )
     } else {
         to_decimal_normal::<Float, Float::SigType>(
             bin_sig | Float::IMPLICIT_BIT,
