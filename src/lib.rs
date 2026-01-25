@@ -636,7 +636,7 @@ unsafe fn write_significand17(
         // zero. buffer points to the second place in the output buffer to allow
         // for the insertion of the decimal point, so we can use the first place
         // as scratch.
-        buffer = unsafe { buffer.add(usize::from(has17digits)) };
+        buffer = unsafe { buffer.offset(isize::from(has17digits) - 1) };
         unsafe {
             *buffer.add(16) = last_digit as u8 + b'0';
         }
