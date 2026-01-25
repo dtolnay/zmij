@@ -619,7 +619,7 @@ unsafe fn write_significand17(
             buffer.cast::<uint16x8_t>().write_unaligned(str);
 
             let is_not_zero: uint16x8_t =
-                vreinterpretq_u16_u8(vcgtzq_s8(mem::transmute::<uint8x16_t, int8x16_t>(digits)));
+                vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
             let zeros: u64 = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
 
             buffer.add(16 - (zeros.leading_zeros() as usize >> 2))
