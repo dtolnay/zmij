@@ -421,9 +421,11 @@ unsafe fn digits2(value: usize) -> &'static u16 {
 const DIV10K_EXP: i32 = 40;
 const DIV10K_SIG: u32 = ((1u64 << DIV10K_EXP) / 10000 + 1) as u32;
 const NEG10K: u32 = ((1u64 << 32) - 10000) as u32;
+
 const DIV100_EXP: i32 = 19;
 const DIV100_SIG: u32 = (1 << DIV100_EXP) / 100 + 1;
 const NEG100: u32 = (1 << 16) - 100;
+
 const DIV10_EXP: i32 = 10;
 const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
 const NEG10: u32 = (1 << 8) - 10;
@@ -460,33 +462,6 @@ unsafe fn write8(buffer: *mut u8, value: u64) {
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
     }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-const fn splat64(x: u64) -> u128 {
-    ((x as u128) << 64) | x as u128
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-const fn splat32(x: u32) -> u128 {
-    splat64(((x as u64) << 32) | x as u64)
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-const fn splat16(x: u16) -> u128 {
-    splat32(((x as u32) << 16) | x as u32)
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
-const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
-    ((h as u64) << 56)
-        | ((g as u64) << 48)
-        | ((f as u64) << 40)
-        | ((e as u64) << 32)
-        | ((d as u64) << 24)
-        | ((c as u64) << 16)
-        | ((b as u64) << 8)
-        | a as u64
 }
 
 // Writes a significand consisting of up to 9 decimal digits (8-9 for normals)
@@ -690,23 +665,49 @@ unsafe fn write_significand17(
             zeros: u128,
         }
 
+        impl Consts {
+            const fn splat64(x: u64) -> u128 {
+                ((x as u128) << 64) | x as u128
+            }
+
+            const fn splat32(x: u32) -> u128 {
+                Self::splat64(((x as u64) << 32) | x as u64)
+            }
+
+            const fn splat16(x: u16) -> u128 {
+                Self::splat32(((x as u32) << 16) | x as u32)
+            }
+
+            #[cfg(target_feature = "sse4.1")]
+            const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
+                ((h as u64) << 56)
+                    | ((g as u64) << 48)
+                    | ((f as u64) << 40)
+                    | ((e as u64) << 32)
+                    | ((d as u64) << 24)
+                    | ((c as u64) << 16)
+                    | ((b as u64) << 8)
+                    | a as u64
+            }
+        }
+
         static CONSTS: Consts = Consts {
-            div10k: splat64(DIV10K_SIG as u64),
-            neg10k: splat64(NEG10K as u64),
-            div100: splat32(DIV100_SIG),
-            div10: splat16(((1u32 << 16) / 10 + 1) as u16),
+            div10k: Consts::splat64(DIV10K_SIG as u64),
+            neg10k: Consts::splat64(NEG10K as u64),
+            div100: Consts::splat32(DIV100_SIG),
+            div10: Consts::splat16(((1u32 << 16) / 10 + 1) as u16),
             #[cfg(target_feature = "sse4.1")]
-            neg100: splat32(NEG100),
+            neg100: Consts::splat32(NEG100),
             #[cfg(target_feature = "sse4.1")]
-            neg10: splat16((1 << 8) - 10),
+            neg10: Consts::splat16((1 << 8) - 10),
             #[cfg(target_feature = "sse4.1")]
-            bswap: pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
-                | (pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
+            bswap: Consts::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
+                | (Consts::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
             #[cfg(not(target_feature = "sse4.1"))]
-            hundred: splat32(100),
+            hundred: Consts::splat32(100),
             #[cfg(not(target_feature = "sse4.1"))]
-            moddiv10: splat16(10 * (1 << 8) - 1),
-            zeros: splat64(ZEROS),
+            moddiv10: Consts::splat16(10 * (1 << 8) - 1),
+            zeros: Consts::splat64(ZEROS),
         };
 
         let div10k = unsafe { _mm_load_si128(ptr::addr_of!(CONSTS.div10k).cast::<__m128i>()) };
@@ -1126,7 +1127,6 @@ where
             return buffer.add(2);
         }
     }
-
     // digit = dec_exp / 100
     let digit = if USE_UMUL128_HI64 {
         umul128_hi64(dec_exp as u64, 0x290000000000000) as u32
