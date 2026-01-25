@@ -41,7 +41,7 @@
 //! ![performance](https://raw.githubusercontent.com/dtolnay/zmij/master/dtoa-benchmark.png)
 
 #![no_std]
-#![doc(html_root_url = "https://docs.rs/zmij/1.0.16")]
+#![doc(html_root_url = "https://docs.rs/zmij/1.0.17")]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types, non_snake_case)]
 #![allow(
