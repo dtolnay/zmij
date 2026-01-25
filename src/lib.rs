@@ -1025,13 +1025,17 @@ where
         );
     }
     let mut dec_exp = dec.exp;
-    let threshold = if Float::NUM_BITS == 64 {
-        10_000_000_000_000_000
-    } else {
-        100_000_000
-    };
-    let extra_digit = dec.sig >= threshold;
+    let extra_digit = dec.sig
+        >= if Float::NUM_BITS == 64 {
+            10_000_000_000_000_000
+        } else {
+            100_000_000
+        };
     dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
+    if Float::NUM_BITS == 32 && dec.sig < 10_000_000 {
+        dec.sig *= 10;
+        dec_exp -= 1;
+    }
 
     // Write significand.
     let end = if Float::NUM_BITS == 64 {
@@ -1045,10 +1049,6 @@ where
             )
         }
     } else {
-        if dec.sig < 10_000_000 {
-            dec.sig *= 10;
-            dec_exp -= 1;
-        }
         unsafe { write_significand9(buffer.add(1), dec.sig as u32, extra_digit) }
     };
 
