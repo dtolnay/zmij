@@ -305,6 +305,7 @@ const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
     (bin_exp * LOG10_2_SIG - !regular as i32 * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
 }
 
+#[inline]
 const fn do_compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
     debug_assert!(dec_exp >= -350 && dec_exp <= 350);
     // log2_pow10_sig = round(log2(10) * 2**log2_pow10_exp) + 1
@@ -359,6 +360,7 @@ static EXP_SHIFTS: ExpShiftTable = {
 // 10^dec_exp puts the decimal point in different bit positions:
 //   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
 //   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+#[inline]
 unsafe fn compute_exp_shift<UInt, const ONLY_REGULAR: bool>(bin_exp: i32, dec_exp: i32) -> u8
 where
     UInt: traits::UInt,
@@ -469,6 +471,7 @@ unsafe fn write8(buffer: *mut u8, value: u64) {
 // (8-9 for normals) for float. The significant digits start from buffer[1].
 // buffer[0] may contain '0' after this function if the leading digit is zero.
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
 unsafe fn write_significand<Float>(mut buffer: *mut u8, value: u64, extra_digit: bool) -> *mut u8
 where
     Float: FloatTraits,
@@ -771,6 +774,7 @@ struct ToDecimalResult {
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
 fn to_decimal_schubfach<UInt>(bin_sig: UInt, bin_exp: i64, regular: bool) -> ToDecimalResult
 where
     UInt: traits::UInt,
@@ -838,6 +842,7 @@ where
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
 // representation, where bin_exp = raw_exp - exp_offset.
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
 fn to_decimal_fast<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> ToDecimalResult
 where
     Float: FloatTraits,
