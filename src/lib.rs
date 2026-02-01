@@ -806,8 +806,7 @@ where
 
     // The idea of using a single shorter candidate is by Cassio Neri.
     // It is less or equal to the upper bound by construction.
-    let div10 = (upper >> BOUND_SHIFT) / UInt::from(10);
-    let shorter = div10 * UInt::from(10);
+    let shorter = (upper >> BOUND_SHIFT) / UInt::from(10) * UInt::from(10);
     if (shorter << BOUND_SHIFT) >= lower {
         return ToDecimalResult {
             sig: shorter.into() as i64,
