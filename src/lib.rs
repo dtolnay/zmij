@@ -54,6 +54,7 @@
     clippy::incompatible_msrv,
     clippy::items_after_statements,
     clippy::many_single_char_names,
+    clippy::modulo_one,
     clippy::must_use_candidate,
     clippy::needless_doctest_main,
     clippy::never_loop,
