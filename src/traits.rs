@@ -8,6 +8,14 @@ pub trait Float: Copy {
     const MAX_DIGITS10: u32;
 }
 
+#[cfg(feature = "f16")]
+impl Float for f16 {
+    const MANTISSA_DIGITS: u32 = Self::MANTISSA_DIGITS;
+    const MIN_10_EXP: i32 = Self::MIN_10_EXP;
+    const MAX_10_EXP: i32 = Self::MAX_10_EXP;
+    const MAX_DIGITS10: u32 = 5;
+}
+
 impl Float for f32 {
     const MANTISSA_DIGITS: u32 = Self::MANTISSA_DIGITS;
     const MIN_10_EXP: i32 = Self::MIN_10_EXP;
@@ -46,8 +54,24 @@ pub trait UInt:
     type Signed: Ord;
     fn wrapping_sub(self, other: Self) -> Self;
     fn truncate(big: u64) -> Self;
-    fn enlarge(small: u32) -> Self;
+    fn from_u32(x: u32) -> Self;
     fn to_signed(self) -> Self::Signed;
+}
+
+impl UInt for u16 {
+    type Signed = i16;
+    fn wrapping_sub(self, other: Self) -> Self {
+        self.wrapping_sub(other)
+    }
+    fn truncate(big: u64) -> Self {
+        big as u16
+    }
+    fn from_u32(x: u32) -> Self {
+        x as u16
+    }
+    fn to_signed(self) -> Self::Signed {
+        self as i16
+    }
 }
 
 impl UInt for u32 {
@@ -58,8 +82,8 @@ impl UInt for u32 {
     fn truncate(big: u64) -> Self {
         big as u32
     }
-    fn enlarge(small: u32) -> Self {
-        small
+    fn from_u32(x: u32) -> Self {
+        x
     }
     fn to_signed(self) -> Self::Signed {
         self as i32
@@ -74,8 +98,8 @@ impl UInt for u64 {
     fn truncate(big: u64) -> Self {
         big
     }
-    fn enlarge(small: u32) -> Self {
-        u64::from(small)
+    fn from_u32(x: u32) -> Self {
+        x as u64
     }
     fn to_signed(self) -> Self::Signed {
         self as i64

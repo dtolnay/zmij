@@ -41,6 +41,7 @@
 //! ![performance](https://raw.githubusercontent.com/dtolnay/zmij/master/dtoa-benchmark.png)
 
 #![no_std]
+#![cfg_attr(feature = "f16", feature(f16))]
 #![doc(html_root_url = "https://docs.rs/zmij/1.0.21")]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types, non_snake_case)]
@@ -138,9 +139,12 @@ where
     if num_bits == 64 {
         let p = umul192_hi128(x_hi, x_lo, y.into());
         UInt::truncate(p.hi | u64::from((p.lo >> 1) != 0))
-    } else {
+    } else if num_bits == 32 {
         let p = (umul128(x_hi, y.into()) >> 32) as u64;
-        UInt::enlarge((p >> 32) as u32 | u32::from((p as u32 >> 1) != 0))
+        UInt::from_u32((p >> 32) as u32 | u32::from((p as u32 >> 1) != 0))
+    } else {
+        let p = (umul128(x_hi, y.into()) >> 16) as u64;
+        UInt::truncate((p >> 48) | u64::from((p >> 1) != 0))
     }
 }
 
@@ -167,6 +171,18 @@ trait FloatTraits: traits::Float {
 
     fn get_exp(bits: Self::SigType) -> i64 {
         (bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
+    }
+}
+
+#[cfg(feature = "f16")]
+impl FloatTraits for f16 {
+    const NUM_BITS: i32 = 16;
+    const IMPLICIT_BIT: u16 = 1 << Self::NUM_SIG_BITS;
+
+    type SigType = u16;
+
+    fn to_bits(self) -> Self::SigType {
+        self.to_bits()
     }
 }
 
@@ -534,7 +550,14 @@ unsafe fn write_significand<Float>(mut buffer: *mut u8, value: u64, extra_digit:
 where
     Float: FloatTraits,
 {
-    if Float::NUM_BITS == 32 {
+    if Float::NUM_BITS == 16 {
+        buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
+        let bcd = to_bcd8(value % 100_000_000);
+        unsafe {
+            write8(buffer.sub(4), bcd + ZEROS);
+            return buffer.sub(4).add(count_trailing_nonzeros(bcd));
+        }
+    } else if Float::NUM_BITS == 32 {
         buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
         let bcd = to_bcd8(value % 100_000_000);
         unsafe {
@@ -1024,8 +1047,10 @@ where
     let mut dec;
     let threshold = if Float::NUM_BITS == 64 {
         10_000_000_000_000_000
-    } else {
+    } else if Float::NUM_BITS == 32 {
         100_000_000
+    } else {
+        10_000
     };
     if bin_exp == 0 {
         if bin_sig == Float::SigType::from(0) {
@@ -1051,7 +1076,7 @@ where
     let mut dec_exp = dec.exp;
     let extra_digit = dec.sig >= threshold;
     dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
-    if Float::NUM_BITS == 32 && dec.sig < 10_000_000 {
+    if (Float::NUM_BITS == 16 && dec.sig < 1_000) || (Float::NUM_BITS == 32 && dec.sig < 10_000_000) {
         dec.sig *= 10;
         dec_exp -= 1;
     }
@@ -1061,7 +1086,8 @@ where
 
     let length = unsafe { end.offset_from(buffer.add(1)) } as usize;
 
-    if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
+    if Float::NUM_BITS == 16 && (-7..=9).contains(&dec_exp)
+        || Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
         || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
     {
         if length as i32 - 1 <= dec_exp {
@@ -1212,6 +1238,8 @@ impl Buffer {
 #[allow(unknown_lints)] // rustc older than 1.74
 #[allow(private_bounds)]
 pub trait Float: private::Sealed {}
+#[cfg(feature = "f16")]
+impl Float for f16 {}
 impl Float for f32 {}
 impl Float for f64 {}
 
@@ -1220,6 +1248,36 @@ mod private {
         fn is_nonfinite(self) -> bool;
         fn format_nonfinite(self) -> &'static str;
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8;
+    }
+
+    #[cfg(feature = "f16")]
+    impl Sealed for f16 {
+        #[inline]
+        fn is_nonfinite(self) -> bool {
+            const EXP_MASK: u16 = 0x7b00;
+            let bits = self.to_bits();
+            bits & EXP_MASK == EXP_MASK
+        }
+
+        #[cold]
+        #[cfg_attr(feature = "no-panic", inline)]
+        fn format_nonfinite(self) -> &'static str {
+            const MANTISSA_MASK: u16 = 0x03ff;
+            const SIGN_MASK: u16 = 0x8000;
+            let bits = self.to_bits();
+            if bits & MANTISSA_MASK != 0 {
+                crate::NAN
+            } else if bits & SIGN_MASK != 0 {
+                crate::NEG_INFINITY
+            } else {
+                crate::INFINITY
+            }
+        }
+
+        #[cfg_attr(feature = "no-panic", inline)]
+        unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
+            unsafe { crate::write(self, buffer) }
+        }
     }
 
     impl Sealed for f32 {
