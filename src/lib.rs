@@ -401,7 +401,7 @@ static EXP_SHIFTS: ExpShiftTable = {
             bin_exp += 1;
         }
         let dec_exp = compute_dec_exp(bin_exp, true);
-        data[raw_exp] = do_compute_exp_shift(bin_exp, dec_exp) as u8;
+        data[raw_exp] = do_compute_exp_shift(bin_exp, dec_exp);
         raw_exp += 1;
     }
 
