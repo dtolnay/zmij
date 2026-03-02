@@ -909,8 +909,10 @@ where
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     // An optimization from yy by Yaoyuan Guo:
     while regular {
+        const LOG10_2_SIG: u64 = 78_913;
+        const LOG10_2_EXP: i32 = 18;
         let dec_exp = if USE_UMUL128_HI64 {
-            umul128_hi64(bin_exp as u64, 0x4d10500000000000) as i32
+            umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
         } else {
             compute_dec_exp(bin_exp as i32, true)
         };
@@ -987,7 +989,8 @@ where
         // Check for near-boundary case when rounding up to nearest 10.
         // Case where upper == ten is insufficient: 1.342178e+08f.
         if ten.wrapping_sub(upper) <= 1 {
-            break; // upper == ten || upper == ten - 1
+            // upper == ten || upper == ten - 1
+            break;
         }
 
         let even = 1 - (bin_sig.into() & 1);
