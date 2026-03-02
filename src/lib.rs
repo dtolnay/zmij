@@ -984,18 +984,16 @@ where
         // s - shorter underestimate, S - shorter overestimate
         // l - longer underestimate,  L - longer overestimate
 
-        // Check for boundary case when rounding down to nearest 10 and
-        // near-boundary case when rounding up to nearest 10.
+        // Check for near-boundary case when rounding up to nearest 10.
         // Case where upper == ten is insufficient: 1.342178e+08f.
-        if ten.wrapping_sub(upper) <= 1 // upper == ten || upper == ten - 1
-            || scaled_sig_mod10 == scaled_half_ulp
-        {
-            break;
+        if ten.wrapping_sub(upper) <= 1 {
+            break; // upper == ten || upper == ten - 1
         }
 
+        let even = 1 - (bin_sig.into() & 1);
         let shorter = (integral.into() - digit) as i64;
         let longer = (integral.into() + u64::from(cmp >= 0)) as i64;
-        let dec_sig = select_if_less(scaled_sig_mod10, scaled_half_ulp, shorter, longer);
+        let dec_sig = select_if_less(scaled_sig_mod10, scaled_half_ulp + even, shorter, longer);
         return ToDecimalResult {
             sig: select_if_less(ten, upper, shorter + 10, dec_sig),
             exp: dec_exp,
