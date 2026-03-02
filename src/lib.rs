@@ -1107,29 +1107,23 @@ where
     buffer = unsafe { buffer.add(1) };
     dec_exp = if dec_exp >= 0 { dec_exp } else { -dec_exp };
     buffer = unsafe { buffer.add(usize::from(dec_exp >= 10)) };
-    if Float::MIN_10_EXP > -100 && Float::MAX_10_EXP < 100 {
+    if Float::MAX_10_EXP >= 100 {
+        // digit = dec_exp / 100
+        let digit = if USE_UMUL128_HI64 {
+            umul128_hi64(dec_exp as u64, 0x290000000000000) as u32
+        } else {
+            (dec_exp as u32 * DIV100_SIG) >> DIV100_EXP
+        };
         unsafe {
-            buffer
-                .cast::<u16>()
-                .write_unaligned(*digits2(dec_exp as usize));
-            sign_ptr.cast::<u16>().write_unaligned(e_sign.to_le());
-            return buffer.add(2);
+            *buffer = b'0' + digit as u8;
         }
+        buffer = unsafe { buffer.add(usize::from(dec_exp >= 100)) };
+        dec_exp -= (digit * 100) as i32;
     }
-    // digit = dec_exp / 100
-    let digit = if USE_UMUL128_HI64 {
-        umul128_hi64(dec_exp as u64, 0x290000000000000) as u32
-    } else {
-        (dec_exp as u32 * DIV100_SIG) >> DIV100_EXP
-    };
-    unsafe {
-        *buffer = b'0' + digit as u8;
-    }
-    buffer = unsafe { buffer.add(usize::from(dec_exp >= 100)) };
     unsafe {
         buffer
             .cast::<u16>()
-            .write_unaligned(*digits2((dec_exp as u32 - digit * 100) as usize));
+            .write_unaligned(*digits2(dec_exp as usize));
         sign_ptr.cast::<u16>().write_unaligned(e_sign.to_le());
         buffer.add(2)
     }
