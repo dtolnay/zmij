@@ -987,7 +987,7 @@ where
         // s - shorter underestimate, S - shorter overestimate
         // l - longer underestimate,  L - longer overestimate
 
-        // Check for near-boundary case when rounding up to nearest 10
+        // Check for near-boundary case when rounding up to nearest 10;
         // equivalent to upper == ten || upper == ten - 1.
         // Case where upper == ten is insufficient: 1.342178e+08f.
         if ten.wrapping_sub(upper) <= 1 {
