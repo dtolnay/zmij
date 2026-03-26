@@ -192,6 +192,7 @@ impl FloatTraits for f64 {
     }
 }
 
+// Safety-relevant invariant: The length here must be 28
 #[rustfmt::skip]
 const POW10_MINOR: [u64; 28] = [
     0x8000000000000000, 0xa000000000000000, 0xc800000000000000,
@@ -206,6 +207,7 @@ const POW10_MINOR: [u64; 28] = [
     0xcecb8f27f4200f3a,
 ];
 
+// Safety-relevant invariant: The length here must be at least 23
 #[rustfmt::skip]
 const POW10_MAJOR: [uint128; 23] = [
     uint128 { hi: 0xaf8e5410288e1b6f, lo: 0x07ecf0ae5ee44dda }, // -303
@@ -233,6 +235,7 @@ const POW10_MAJOR: [uint128; 23] = [
     uint128 { hi: 0xd94ad8b1c7380874, lo: 0x18375281ae7822bc }, //  313
 ];
 
+// Safety-relevant invariant: The length here must be at least 20
 #[rustfmt::skip]
 const POW10_FIXUPS: [u32; 20] = [
     0x05271b1f, 0x00000c20, 0x00003200, 0x12100020, 0x00000000,
@@ -244,6 +247,8 @@ const POW10_FIXUPS: [u32; 20] = [
 // 128-bit significands of powers of 10 rounded down.
 #[repr(C, align(64))]
 struct Pow10SignificandsTable {
+    // Safety-relevant invariant: the length must be `NUM_POW10S * 2`
+    // if `COMPRESS` is false.
     data: [u64; if Self::COMPRESS {
         0
     } else {
@@ -253,13 +258,26 @@ struct Pow10SignificandsTable {
 
 impl Pow10SignificandsTable {
     const COMPRESS: bool = false;
+    // Safety-relevant invariant: this should never be true if COMPRESS is true
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
     const NUM_POW10S: usize = 617;
 
-    // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
-    const fn compute(i: u32) -> uint128 {
+    /// Computes the 128-bit significand of 10**i using method by Dougall Johnson.
+    ///
+    /// # Safety invariants
+    ///
+    /// `i < NUM_POW10S` (617)
+    const unsafe fn compute(i: u32) -> uint128 {
+        debug_assert!((i as usize) < Self::NUM_POW10S);
+
         const STRIDE: u32 = POW10_MINOR.len() as u32;
+        // Safety: STRIDE is the len of POW10_MINOR, so it's always safe to index POW10_MINOR
+        // by a number that is % STRIDE
         let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 11) % STRIDE) as usize) };
+        // Safety: The maximum value of the index here is 616 + 11 / STRIDE = 627 / STRIDE
+        // = 627 / 28 = 22.4. 22 is a valid index for POW10_MAJOR.
+        //
+        // We use the safety-relevant invariants on the lengths of POW10_MINOR and POW10_MAJOR above here.
         let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 11) / STRIDE) as usize) };
 
         let h1 = umul128_hi64(h.lo, m);
@@ -276,6 +294,8 @@ impl Pow10SignificandsTable {
                 lo: (c1 << 1) | (c0 >> 63),
             }
         };
+        // Safety: i >> 5 has a maximum value of 616 >> 5, which is 19. This is a valid index into
+        // POW10_FIXUPS, which has len 20
         result.lo -=
             ((unsafe { *POW10_FIXUPS.as_ptr().add((i >> 5) as usize) } >> (i & 31)) & 1) as u64;
         result
@@ -290,7 +310,8 @@ impl Pow10SignificandsTable {
 
         let mut i = 0;
         while i < Self::NUM_POW10S && !Self::COMPRESS {
-            let result = Self::compute(i as u32);
+            // Safety: i < NUM_POW10S checked in while predicate
+            let result = unsafe { Self::compute(i as u32) };
             if Self::SPLIT_TABLES {
                 data[Self::NUM_POW10S - i - 1] = result.hi;
                 data[Self::NUM_POW10S * 2 - i - 1] = result.lo;
@@ -304,13 +325,26 @@ impl Pow10SignificandsTable {
         Pow10SignificandsTable { data }
     }
 
+    const DEC_EXP_MIN: i32 = -292;
+
+    /// # Safety
+    ///
+    /// dec_exp must be in `DEC_EXP_MIN..(DEC_EXP_MIN + NUM_POW10S)`
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
+        debug_assert!(
+            (Self::DEC_EXP_MIN..Self::DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp)
+        );
         if Self::COMPRESS {
-            return Self::compute((dec_exp - DEC_EXP_MIN) as u32);
+            // Safety: subtracting DEC_EXP_MIN from the function invariant
+            // gives us the range 0..NUM_POW10S, which is the safety invariant of `Self::compute`
+            return unsafe { Self::compute((dec_exp - Self::DEC_EXP_MIN) as u32) };
         }
+        // Safety: COMPRESS *must* be false here (from control flow),
+        // which also means that `self.data` has a length of `NUM_POW10S * 2`
         if !Self::SPLIT_TABLES {
-            let index = ((dec_exp - DEC_EXP_MIN) * 2) as usize;
+            // Safety: doubling a value between `0..NUM_POW10S` gives a value in `0..NUM_POW10S * 2 - 1``,
+            // so it is safe to index `self.data` with it and its subsequent value.
+            let index = ((dec_exp - Self::DEC_EXP_MIN) * 2) as usize;
             return uint128 {
                 hi: unsafe { *self.data.get_unchecked(index) },
                 lo: unsafe { *self.data.get_unchecked(index + 1) },
@@ -325,7 +359,7 @@ impl Pow10SignificandsTable {
             let mut hi = self
                 .data
                 .as_ptr()
-                .offset(Self::NUM_POW10S as isize + DEC_EXP_MIN as isize - 1);
+                .offset(Self::NUM_POW10S as isize + Self::DEC_EXP_MIN as isize - 1);
             #[cfg_attr(
                 not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
                 allow(unused_mut)
@@ -336,7 +370,11 @@ impl Pow10SignificandsTable {
             #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri)))]
             asm!("/*{0}{1}*/", inout(reg) hi, inout(reg) lo);
             uint128 {
+                // Safety: this is in the range NUM_POW10S + DEC_EXP_MIN - 1 - (DEC_EXP_MIN..(DEC_EXP_MIN + NUM_POW10S))
+                // This is the range 0..NUM_POW10S, which is in the range of self.data
+                // (Note that when subtracting a range, the closed start and open end get inverted, which takes care of the -1)
                 hi: *hi.offset(-dec_exp as isize),
+                // Safety; This is hi + NUM_POW10S, which is in the range of self.data
                 lo: *lo.offset(-dec_exp as isize),
             }
         }
@@ -344,8 +382,10 @@ impl Pow10SignificandsTable {
 
     #[cfg(test)]
     fn get(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
-        assert!((DEC_EXP_MIN..DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp));
+        assert!(
+            (Self::DEC_EXP_MIN..Self::DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp)
+        );
+        // Safety: invariant upheld by assertion above
         unsafe { self.get_unchecked(dec_exp) }
     }
 }
