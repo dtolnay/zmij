@@ -508,13 +508,18 @@ static DIGITS2: Digits2 = Digits2(
        8081828384858687888990919293949596979899",
 );
 
-// Converts value in the range [0, 100) to a string. GCC generates a bit better
-// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+//. Converts value in the range [0, 100) to a string. GCC generates a bit better
+/// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+///
+/// # Safety
+///
+/// value < 100
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn digits2(value: usize) -> &'static u16 {
     debug_assert!(value < 100);
 
-    // Safety: TODO
+    // Safety: DIGITS2 has length 200 u8, which is 100 u16,
+    // so an index up to length 100 is safe.
     #[allow(clippy::cast_ptr_alignment)]
     unsafe {
         &*DIGITS2.0.as_ptr().cast::<u16>().add(value)
