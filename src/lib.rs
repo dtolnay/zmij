@@ -466,6 +466,7 @@ where
 {
     let num_bits = mem::size_of::<UInt>() * 8;
     if num_bits == 64 && ExpShiftTable::ENABLE && ONLY_REGULAR {
+        // Safety: TODO
         unsafe {
             *EXP_SHIFTS
                 .data
@@ -513,6 +514,7 @@ static DIGITS2: Digits2 = Digits2(
 unsafe fn digits2(value: usize) -> &'static u16 {
     debug_assert!(value < 100);
 
+    // Safety: TODO
     #[allow(clippy::cast_ptr_alignment)]
     unsafe {
         &*DIGITS2.0.as_ptr().cast::<u16>().add(value)
@@ -553,6 +555,7 @@ fn to_bcd8(abcdefgh: u64) -> u64 {
 }
 
 unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
+    // Safety: TODO
     unsafe {
         *buffer = b'0' + digit as u8;
         buffer.add(usize::from(condition))
@@ -560,6 +563,7 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
 }
 
 unsafe fn write8(buffer: *mut u8, value: u64) {
+    // Safety: TODO
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
     }
@@ -576,8 +580,10 @@ where
     Float: FloatTraits,
 {
     if Float::NUM_BITS == 32 {
+        // Safety: TODO
         buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
         let bcd = to_bcd8(value % 100_000_000);
+        // Safety:: TODO
         unsafe {
             write8(buffer, bcd + ZEROS);
             return buffer.add(count_trailing_nonzeros(bcd));
@@ -592,15 +598,19 @@ where
         // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
+        // Safety:: TODO
         buffer = unsafe { write_if(buffer, abbccddee / 100_000_000, extra_digit) };
         let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
+        // Safety: TODO
         unsafe {
             write8(buffer, bcd + ZEROS);
         }
         if ffgghhii == 0 {
+            // Safety: TODO
             return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
         }
         let bcd = to_bcd8(u64::from(ffgghhii));
+        // Safety: TODO
         unsafe {
             write8(buffer.add(8), bcd + ZEROS);
             buffer.add(8).add(count_trailing_nonzeros(bcd))
@@ -626,6 +636,8 @@ where
         static CONSTS: Consts = Consts {
             mul_const: 0xabcc77118461cefd,
             hundred_million: 100000000,
+
+            // Safety: TODO
             multipliers32: unsafe {
                 mem::transmute::<[i32; 4], int32x4_t>([
                     DIV10K_SIG as i32,
@@ -634,6 +646,8 @@ where
                     NEG100 as i32,
                 ])
             },
+
+            // Safety: TODO
             multipliers16: unsafe {
                 mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
             },
@@ -641,6 +655,7 @@ where
 
         let mut c = ptr::addr_of!(CONSTS);
 
+        // Safety: TODO
         // Compiler barrier, or clang doesn't load from memory and generates 15
         // more instructions.
         let c = unsafe {
@@ -650,6 +665,7 @@ where
 
         let mut hundred_million = c.hundred_million;
 
+        // Safety: TODO
         // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
         unsafe {
             asm!("/*{0}*/", inout(reg) hundred_million);
@@ -664,8 +680,10 @@ where
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
+        // Safety: TODO
         buffer = unsafe { write_if(buffer, a as u32, extra_digit) };
 
+        // Safety: TODO
         unsafe {
             let ffgghhii_bbccddee_64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
@@ -733,6 +751,7 @@ where
         let a = abbccddee / 100_000_000;
         let bbccddee = abbccddee % 100_000_000;
 
+        // Safety: TODO
         buffer = unsafe { write_if(buffer, a, extra_digit) };
 
         #[repr(C, align(64))]
@@ -800,11 +819,13 @@ where
         };
 
         let mut c = ptr::addr_of!(CONSTS);
+        // Safety: TODO
         // Load constants from memory.
         unsafe {
             asm!("/*{0}*/", inout(reg) c);
         }
 
+        // Safety: TODO
         let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
         let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
         let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
@@ -821,6 +842,7 @@ where
         let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
+        // Safety: TODO
         // The BCD sequences are based on ones provided by Xiang JunBo.
         unsafe {
             let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
