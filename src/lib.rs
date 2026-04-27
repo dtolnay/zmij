@@ -264,7 +264,7 @@ impl Pow10SignificandsTable {
 
     /// Computes the 128-bit significand of 10**i using method by Dougall Johnson.
     ///
-    /// # Safety invariants
+    /// # Safety
     ///
     /// `i < NUM_POW10S` (617)
     const unsafe fn compute(i: u32) -> uint128 {
@@ -449,16 +449,22 @@ static EXP_SHIFTS: ExpShiftTable = {
     ExpShiftTable { data }
 };
 
-// Computes a shift so that, after scaling by a power of 10, the intermediate
-// result always has a fixed 128-bit fractional part (for double).
-//
-// Different binary exponents can map to the same decimal exponent, but place
-// the decimal point at different bit positions. The shift compensates for this.
-//
-// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
-// 10^dec_exp puts the decimal point in different bit positions:
-//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
-//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+/// Computes a shift so that, after scaling by a power of 10, the intermediate
+/// result always has a fixed 128-bit fractional part (for double).
+///
+/// Different binary exponents can map to the same decimal exponent, but place
+/// the decimal point at different bit positions. The shift compensates for this.
+///
+/// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
+/// 10^dec_exp puts the decimal point in different bit positions:
+///   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
+///   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+///
+/// # Safety
+///
+/// `bin_exp` must be within the valid range for the binary exponent of a 64-bit float:
+/// `bin_exp + f64::EXP_OFFSET` must be a valid index into the `EXP_SHIFTS.data` array
+/// (i.e. in `0..=f64::EXP_MASK`).
 #[inline]
 unsafe fn compute_exp_shift<UInt, const ONLY_REGULAR: bool>(bin_exp: i32, dec_exp: i32) -> u8
 where
@@ -466,7 +472,10 @@ where
 {
     let num_bits = mem::size_of::<UInt>() * 8;
     if num_bits == 64 && ExpShiftTable::ENABLE && ONLY_REGULAR {
-        // Safety: TODO
+        // Safety: `bin_exp` is derived from `raw_exp - EXP_OFFSET` (where `raw_exp` is
+        // the raw exponent in `0..=EXP_MASK`). Thus `bin_exp + EXP_OFFSET` is
+        // exactly `raw_exp` and is guaranteed to be in `0..=f64::EXP_MASK`.
+        // This exactly matches the valid indices for `EXP_SHIFTS.data` (len EXP_MASK + 1).
         unsafe {
             *EXP_SHIFTS
                 .data
@@ -508,7 +517,7 @@ static DIGITS2: Digits2 = Digits2(
        8081828384858687888990919293949596979899",
 );
 
-//. Converts value in the range [0, 100) to a string. GCC generates a bit better
+/// Converts value in the range [0, 100) to a string. GCC generates a bit better
 /// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
 ///
 /// # Safety
@@ -559,25 +568,35 @@ fn to_bcd8(abcdefgh: u64) -> u64 {
     a_b_c_d_e_f_g_h.to_be()
 }
 
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for writes of at least 1 byte.
 unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
-    // Safety: TODO
+    // Safety: Upheld by the caller according to the contract above.
     unsafe {
         *buffer = b'0' + digit as u8;
         buffer.add(usize::from(condition))
     }
 }
 
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for unaligned writes of at least 8 bytes.
 unsafe fn write8(buffer: *mut u8, value: u64) {
-    // Safety: TODO
+    // Safety: Upheld by the caller according to the contract above.
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
     }
 }
 
-// Writes a significand and removes trailing zeros. value has up to 17 decimal
-// digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
-// (8-9 for normals) for float. The significant digits start from buffer[1].
-// buffer[0] may contain '0' after this function if the leading digit is zero.
+/// Writes a significand and removes trailing zeros. value has up to 17 decimal
+/// digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
+/// (8-9 for normals) for float. The significant digits start from buffer[1].
+/// buffer[0] may contain '0' after this function if the leading digit is zero.
+///
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for writes of at least `BUFFER_SIZE` (24 bytes).
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
 unsafe fn write_significand<Float>(mut buffer: *mut u8, value: u64, extra_digit: bool) -> *mut u8
@@ -585,10 +604,11 @@ where
     Float: FloatTraits,
 {
     if Float::NUM_BITS == 32 {
-        // Safety: TODO
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses 1 byte which is within bounds.
         buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
         let bcd = to_bcd8(value % 100_000_000);
-        // Safety:: TODO
+        // Safety: `write8` writes exactly 8 bytes into a valid pointer (`buffer`), well within the 24 bytes.
+        // `buffer.add(count_trailing_nonzeros(bcd))` moves up to 8 bytes within the region just written.
         unsafe {
             write8(buffer, bcd + ZEROS);
             return buffer.add(count_trailing_nonzeros(bcd));
@@ -603,19 +623,20 @@ where
         // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        // Safety:: TODO
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses at most 1 byte within bounds.
         buffer = unsafe { write_if(buffer, abbccddee / 100_000_000, extra_digit) };
         let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
-        // Safety: TODO
+        // Safety: `write8` writes exactly 8 bytes into a valid pointer (`buffer`), within the 24 bytes.
         unsafe {
             write8(buffer, bcd + ZEROS);
         }
         if ffgghhii == 0 {
-            // Safety: TODO
+            // Safety: `add` moves up to 8 bytes within the 8-byte block already written by `write8`.
             return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
         }
         let bcd = to_bcd8(u64::from(ffgghhii));
-        // Safety: TODO
+        // Safety: `write8` writes exactly 8 bytes into `buffer.add(8)`.
+        // This writes bytes 8 to 16, which is within the valid 24-byte capacity.
         unsafe {
             write8(buffer.add(8), bcd + ZEROS);
             buffer.add(8).add(count_trailing_nonzeros(bcd))
@@ -642,7 +663,7 @@ where
             mul_const: 0xabcc77118461cefd,
             hundred_million: 100000000,
 
-            // Safety: TODO
+            // Safety: Both `[i32; 4]` and `int32x4_t` are exactly 128 bits in size and layout-compatible.
             multipliers32: unsafe {
                 mem::transmute::<[i32; 4], int32x4_t>([
                     DIV10K_SIG as i32,
@@ -652,7 +673,7 @@ where
                 ])
             },
 
-            // Safety: TODO
+            // Safety: Both `[i16; 8]` and `int16x8_t` are exactly 128 bits in size and layout-compatible.
             multipliers16: unsafe {
                 mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
             },
@@ -660,9 +681,8 @@ where
 
         let mut c = ptr::addr_of!(CONSTS);
 
-        // Safety: TODO
-        // Compiler barrier, or clang doesn't load from memory and generates 15
-        // more instructions.
+        // Safety: The compiler barrier does not mutate pointers. Dereferencing `c` is safe because it
+        // still points to `CONSTS` in static storage, which has a valid lifetime for the entire run.
         let c = unsafe {
             asm!("/*{0}*/", inout(reg) c);
             &*c
@@ -670,8 +690,7 @@ where
 
         let mut hundred_million = c.hundred_million;
 
-        // Safety: TODO
-        // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
+        // Safety: A valid register-preserving compiler barrier that has no effect on memory safety.
         unsafe {
             asm!("/*{0}*/", inout(reg) hundred_million);
         }
@@ -685,10 +704,11 @@ where
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
-        // Safety: TODO
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses at most 1 byte within bounds.
         buffer = unsafe { write_if(buffer, a as u32, extra_digit) };
 
-        // Safety: TODO
+        // Safety: Transmuting a `u64` into a `uint64x1_t` does not violate memory safety as they are
+        // identical in size and layout.
         unsafe {
             let ffgghhii_bbccddee_64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
@@ -824,13 +844,14 @@ where
         };
 
         let mut c = ptr::addr_of!(CONSTS);
-        // Safety: TODO
-        // Load constants from memory.
+        // Safety: register-preserving compiler barrier has no effect on memory safety.
+        // It keeps the reference in a single register preventing optimization hoisting.
         unsafe {
             asm!("/*{0}*/", inout(reg) c);
         }
 
-        // Safety: TODO
+        // Safety: The pointer `c` points directly to `CONSTS` which is guaranteed to be aligned to 64 bytes
+        // (via `#[repr(C, align(64))]`). This guarantees sound usage for 16-byte aligned `_mm_load_si128`.
         let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
         let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
         let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
@@ -847,8 +868,8 @@ where
         let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
-        // Safety: TODO
-        // The BCD sequences are based on ones provided by Xiang JunBo.
+        // Safety: The BCD conversions process numeric logic in registers. The final output is written
+        // to the 24-byte capacity buffer.
         unsafe {
             let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
             let y: __m128i = _mm_add_epi64(
@@ -1073,8 +1094,11 @@ where
     to_decimal_schubfach(bin_sig, bin_exp, regular)
 }
 
-/// Writes the shortest correctly rounded decimal representation of `value` to
-/// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
+/// Writes the shortest correctly rounded decimal representation of `value` to `buffer`.
+///
+/// # Safety
+///
+/// `buffer` must be valid for writes of at least `BUFFER_SIZE` (24 bytes).
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write<Float>(value: Float, mut buffer: *mut u8) -> *mut u8
 where
@@ -1282,6 +1306,9 @@ mod private {
     pub trait Sealed: crate::traits::Float {
         fn is_nonfinite(self) -> bool;
         fn format_nonfinite(self) -> &'static str;
+        /// # Safety
+        ///
+        /// `buffer` must be valid for writes of at least `BUFFER_SIZE` (24 bytes).
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8;
     }
 
@@ -1310,6 +1337,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
+            // Safety: Upheld by the caller according to the trait contract above.
             unsafe { crate::write(self, buffer) }
         }
     }
@@ -1339,6 +1367,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
+            // Safety: Upheld by the caller according to the trait contract above.
             unsafe { crate::write(self, buffer) }
         }
     }
