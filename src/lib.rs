@@ -193,6 +193,7 @@ impl FloatTraits for f64 {
     }
 }
 
+// Safety-relevant invariant: The length here must be 28
 #[rustfmt::skip]
 const POW10_MINOR: [u64; 28] = [
     0x8000000000000000, 0xa000000000000000, 0xc800000000000000,
@@ -207,6 +208,7 @@ const POW10_MINOR: [u64; 28] = [
     0xcecb8f27f4200f3a,
 ];
 
+// Safety-relevant invariant: The length here must be at least 23
 #[rustfmt::skip]
 const POW10_MAJOR: [uint128; 23] = [
     uint128 { hi: 0xaf8e5410288e1b6f, lo: 0x07ecf0ae5ee44dda }, // -303
@@ -234,6 +236,7 @@ const POW10_MAJOR: [uint128; 23] = [
     uint128 { hi: 0xd94ad8b1c7380874, lo: 0x18375281ae7822bc }, //  313
 ];
 
+// Safety-relevant invariant: The length here must be at least 20
 #[rustfmt::skip]
 const POW10_FIXUPS: [u32; 20] = [
     0x05271b1f, 0x00000c20, 0x00003200, 0x12100020, 0x00000000,
@@ -245,6 +248,8 @@ const POW10_FIXUPS: [u32; 20] = [
 // 128-bit significands of powers of 10 rounded down.
 #[repr(C, align(64))]
 struct Pow10SignificandsTable {
+    // Safety-relevant invariant: the length must be `NUM_POW10S * 2`
+    // if `COMPRESS` is false.
     data: [u64; if Self::COMPRESS {
         0
     } else {
@@ -254,13 +259,26 @@ struct Pow10SignificandsTable {
 
 impl Pow10SignificandsTable {
     const COMPRESS: bool = false;
+    // Safety-relevant invariant: this should never be true if COMPRESS is true
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
     const NUM_POW10S: usize = 617;
 
-    // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
-    const fn compute(i: u32) -> uint128 {
+    /// Computes the 128-bit significand of 10**i using method by Dougall Johnson.
+    ///
+    /// # Safety
+    ///
+    /// `i < NUM_POW10S` (617)
+    const unsafe fn compute(i: u32) -> uint128 {
+        debug_assert!((i as usize) < Self::NUM_POW10S);
+
         const STRIDE: u32 = POW10_MINOR.len() as u32;
+        // Safety: STRIDE is the len of POW10_MINOR, so it's always safe to index POW10_MINOR
+        // by a number that is % STRIDE
         let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 11) % STRIDE) as usize) };
+        // Safety: The maximum value of the index here is 616 + 11 / STRIDE = 627 / STRIDE
+        // = 627 / 28 = 22.4. 22 is a valid index for POW10_MAJOR.
+        //
+        // We use the safety-relevant invariants on the lengths of POW10_MINOR and POW10_MAJOR above here.
         let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 11) / STRIDE) as usize) };
 
         let h1 = umul128_hi64(h.lo, m);
@@ -277,6 +295,8 @@ impl Pow10SignificandsTable {
                 lo: (c1 << 1) | (c0 >> 63),
             }
         };
+        // Safety: i >> 5 has a maximum value of 616 >> 5, which is 19. This is a valid index into
+        // POW10_FIXUPS, which has len 20
         result.lo -=
             ((unsafe { *POW10_FIXUPS.as_ptr().add((i >> 5) as usize) } >> (i & 31)) & 1) as u64;
         result
@@ -291,7 +311,8 @@ impl Pow10SignificandsTable {
 
         let mut i = 0;
         while i < Self::NUM_POW10S && !Self::COMPRESS {
-            let result = Self::compute(i as u32);
+            // Safety: i < NUM_POW10S checked in while predicate
+            let result = unsafe { Self::compute(i as u32) };
             if Self::SPLIT_TABLES {
                 data[Self::NUM_POW10S - i - 1] = result.hi;
                 data[Self::NUM_POW10S * 2 - i - 1] = result.lo;
@@ -305,13 +326,26 @@ impl Pow10SignificandsTable {
         Pow10SignificandsTable { data }
     }
 
+    const DEC_EXP_MIN: i32 = -292;
+
+    /// # Safety
+    ///
+    /// dec_exp must be in `DEC_EXP_MIN..(DEC_EXP_MIN + NUM_POW10S)`
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
+        debug_assert!(
+            (Self::DEC_EXP_MIN..Self::DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp)
+        );
         if Self::COMPRESS {
-            return Self::compute((dec_exp - DEC_EXP_MIN) as u32);
+            // Safety: subtracting DEC_EXP_MIN from the function invariant
+            // gives us the range 0..NUM_POW10S, which is the safety invariant of `Self::compute`
+            return unsafe { Self::compute((dec_exp - Self::DEC_EXP_MIN) as u32) };
         }
+        // Safety: COMPRESS *must* be false here (from control flow),
+        // which also means that `self.data` has a length of `NUM_POW10S * 2`
         if !Self::SPLIT_TABLES {
-            let index = ((dec_exp - DEC_EXP_MIN) * 2) as usize;
+            // Safety: doubling a value between `0..NUM_POW10S` gives a value in `0..NUM_POW10S * 2 - 1``,
+            // so it is safe to index `self.data` with it and its subsequent value.
+            let index = ((dec_exp - Self::DEC_EXP_MIN) * 2) as usize;
             return uint128 {
                 hi: unsafe { *self.data.get_unchecked(index) },
                 lo: unsafe { *self.data.get_unchecked(index + 1) },
@@ -326,7 +360,7 @@ impl Pow10SignificandsTable {
             let mut hi = self
                 .data
                 .as_ptr()
-                .offset(Self::NUM_POW10S as isize + DEC_EXP_MIN as isize - 1);
+                .offset(Self::NUM_POW10S as isize + Self::DEC_EXP_MIN as isize - 1);
             #[cfg_attr(
                 not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
                 allow(unused_mut)
@@ -337,7 +371,11 @@ impl Pow10SignificandsTable {
             #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri)))]
             asm!("/*{0}{1}*/", inout(reg) hi, inout(reg) lo);
             uint128 {
+                // Safety: this is in the range NUM_POW10S + DEC_EXP_MIN - 1 - (DEC_EXP_MIN..(DEC_EXP_MIN + NUM_POW10S))
+                // This is the range 0..NUM_POW10S, which is in the range of self.data
+                // (Note that when subtracting a range, the closed start and open end get inverted, which takes care of the -1)
                 hi: *hi.offset(-dec_exp as isize),
+                // Safety; This is hi + NUM_POW10S, which is in the range of self.data
                 lo: *lo.offset(-dec_exp as isize),
             }
         }
@@ -345,8 +383,10 @@ impl Pow10SignificandsTable {
 
     #[cfg(test)]
     fn get(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
-        assert!((DEC_EXP_MIN..DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp));
+        assert!(
+            (Self::DEC_EXP_MIN..Self::DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp)
+        );
+        // Safety: invariant upheld by assertion above
         unsafe { self.get_unchecked(dec_exp) }
     }
 }
@@ -410,16 +450,22 @@ static EXP_SHIFTS: ExpShiftTable = {
     ExpShiftTable { data }
 };
 
-// Computes a shift so that, after scaling by a power of 10, the intermediate
-// result always has a fixed 128-bit fractional part (for double).
-//
-// Different binary exponents can map to the same decimal exponent, but place
-// the decimal point at different bit positions. The shift compensates for this.
-//
-// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
-// 10^dec_exp puts the decimal point in different bit positions:
-//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
-//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+/// Computes a shift so that, after scaling by a power of 10, the intermediate
+/// result always has a fixed 128-bit fractional part (for double).
+///
+/// Different binary exponents can map to the same decimal exponent, but place
+/// the decimal point at different bit positions. The shift compensates for this.
+///
+/// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
+/// 10^dec_exp puts the decimal point in different bit positions:
+///   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
+///   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+///
+/// # Safety
+///
+/// `bin_exp` must be within the valid range for the binary exponent of a 64-bit float:
+/// `bin_exp + f64::EXP_OFFSET` must be a valid index into the `EXP_SHIFTS.data` array
+/// (i.e. in `0..=f64::EXP_MASK`).
 #[inline]
 unsafe fn compute_exp_shift<UInt, const ONLY_REGULAR: bool>(bin_exp: i32, dec_exp: i32) -> u8
 where
@@ -427,6 +473,10 @@ where
 {
     let num_bits = mem::size_of::<UInt>() * 8;
     if num_bits == 64 && ExpShiftTable::ENABLE && ONLY_REGULAR {
+        // Safety: `bin_exp` is derived from `raw_exp - EXP_OFFSET` (where `raw_exp` is
+        // the raw exponent in `0..=EXP_MASK`). Thus `bin_exp + EXP_OFFSET` is
+        // exactly `raw_exp` and is guaranteed to be in `0..=f64::EXP_MASK`.
+        // This exactly matches the valid indices for `EXP_SHIFTS.data` (len EXP_MASK + 1).
         unsafe {
             *EXP_SHIFTS
                 .data
@@ -468,12 +518,18 @@ static DIGITS2: Digits2 = Digits2(
        8081828384858687888990919293949596979899",
 );
 
-// Converts value in the range [0, 100) to a string. GCC generates a bit better
-// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+/// Converts value in the range [0, 100) to a string. GCC generates a bit better
+/// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+///
+/// # Safety
+///
+/// value < 100
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn digits2(value: usize) -> &'static u16 {
     debug_assert!(value < 100);
 
+    // Safety: DIGITS2 has length 200 u8, which is 100 u16,
+    // so an index up to length 100 is safe.
     #[allow(clippy::cast_ptr_alignment)]
     unsafe {
         &*DIGITS2.0.as_ptr().cast::<u16>().add(value)
@@ -513,23 +569,35 @@ fn to_bcd8(abcdefgh: u64) -> u64 {
     a_b_c_d_e_f_g_h.to_be()
 }
 
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for writes of at least 1 byte.
 unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
+    // Safety: Upheld by the caller according to the contract above.
     unsafe {
         *buffer = b'0' + digit as u8;
         buffer.add(usize::from(condition))
     }
 }
 
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for unaligned writes of at least 8 bytes.
 unsafe fn write8(buffer: *mut u8, value: u64) {
+    // Safety: Upheld by the caller according to the contract above.
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
     }
 }
 
-// Writes a significand and removes trailing zeros. value has up to 17 decimal
-// digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
-// (8-9 for normals) for float. The significant digits start from buffer[1].
-// buffer[0] may contain '0' after this function if the leading digit is zero.
+/// Writes a significand and removes trailing zeros. value has up to 17 decimal
+/// digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
+/// (8-9 for normals) for float. The significant digits start from buffer[1].
+/// buffer[0] may contain '0' after this function if the leading digit is zero.
+///
+/// # Safety
+///
+/// The caller must ensure that `buffer` is valid for writes of at least `BUFFER_SIZE` (24 bytes).
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
 unsafe fn write_significand<Float>(mut buffer: *mut u8, value: u64, extra_digit: bool) -> *mut u8
@@ -537,8 +605,11 @@ where
     Float: FloatTraits,
 {
     if Float::NUM_BITS == 32 {
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses 1 byte which is within bounds.
         buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
         let bcd = to_bcd8(value % 100_000_000);
+        // Safety: `write8` writes exactly 8 bytes into a valid pointer (`buffer`), well within the 24 bytes.
+        // `buffer.add(count_trailing_nonzeros(bcd))` moves up to 8 bytes within the region just written.
         unsafe {
             write8(buffer, bcd + ZEROS);
             return buffer.add(count_trailing_nonzeros(bcd));
@@ -553,15 +624,20 @@ where
         // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses at most 1 byte within bounds.
         buffer = unsafe { write_if(buffer, abbccddee / 100_000_000, extra_digit) };
         let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
+        // Safety: `write8` writes exactly 8 bytes into a valid pointer (`buffer`), within the 24 bytes.
         unsafe {
             write8(buffer, bcd + ZEROS);
         }
         if ffgghhii == 0 {
+            // Safety: `add` moves up to 8 bytes within the 8-byte block already written by `write8`.
             return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
         }
         let bcd = to_bcd8(u64::from(ffgghhii));
+        // Safety: `write8` writes exactly 8 bytes into `buffer.add(8)`.
+        // This writes bytes 8 to 16, which is within the valid 24-byte capacity.
         unsafe {
             write8(buffer.add(8), bcd + ZEROS);
             buffer.add(8).add(count_trailing_nonzeros(bcd))
@@ -587,6 +663,8 @@ where
         static CONSTS: Consts = Consts {
             mul_const: 0xabcc77118461cefd,
             hundred_million: 100000000,
+
+            // Safety: Both `[i32; 4]` and `int32x4_t` are exactly 128 bits in size and layout-compatible.
             multipliers32: unsafe {
                 mem::transmute::<[i32; 4], int32x4_t>([
                     DIV10K_SIG as i32,
@@ -595,6 +673,8 @@ where
                     NEG100 as i32,
                 ])
             },
+
+            // Safety: Both `[i16; 8]` and `int16x8_t` are exactly 128 bits in size and layout-compatible.
             multipliers16: unsafe {
                 mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
             },
@@ -602,8 +682,8 @@ where
 
         let mut c = ptr::addr_of!(CONSTS);
 
-        // Compiler barrier, or clang doesn't load from memory and generates 15
-        // more instructions.
+        // Safety: The compiler barrier does not mutate pointers. Dereferencing `c` is safe because it
+        // still points to `CONSTS` in static storage, which has a valid lifetime for the entire run.
         let c = unsafe {
             asm!("/*{0}*/", inout(reg) c);
             &*c
@@ -611,7 +691,7 @@ where
 
         let mut hundred_million = c.hundred_million;
 
-        // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
+        // Safety: A valid register-preserving compiler barrier that has no effect on memory safety.
         unsafe {
             asm!("/*{0}*/", inout(reg) hundred_million);
         }
@@ -625,8 +705,11 @@ where
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
+        // Safety: `buffer` is valid for 24 bytes. `write_if` accesses at most 1 byte within bounds.
         buffer = unsafe { write_if(buffer, a as u32, extra_digit) };
 
+        // Safety: Transmuting a `u64` into a `uint64x1_t` does not violate memory safety as they are
+        // identical in size and layout.
         unsafe {
             let ffgghhii_bbccddee_64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
@@ -694,6 +777,7 @@ where
         let a = abbccddee / 100_000_000;
         let bbccddee = abbccddee % 100_000_000;
 
+        // Safety: TODO
         buffer = unsafe { write_if(buffer, a, extra_digit) };
 
         #[repr(C, align(64))]
@@ -761,11 +845,14 @@ where
         };
 
         let mut c = ptr::addr_of!(CONSTS);
-        // Load constants from memory.
+        // Safety: register-preserving compiler barrier has no effect on memory safety.
+        // It keeps the reference in a single register preventing optimization hoisting.
         unsafe {
             asm!("/*{0}*/", inout(reg) c);
         }
 
+        // Safety: The pointer `c` points directly to `CONSTS` which is guaranteed to be aligned to 64 bytes
+        // (via `#[repr(C, align(64))]`). This guarantees sound usage for 16-byte aligned `_mm_load_si128`.
         let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
         let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
         let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
@@ -782,7 +869,8 @@ where
         let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
-        // The BCD sequences are based on ones provided by Xiang JunBo.
+        // Safety: The BCD conversions process numeric logic in registers. The final output is written
+        // to the 24-byte capacity buffer.
         unsafe {
             let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
             let y: __m128i = _mm_add_epi64(
@@ -1007,8 +1095,11 @@ where
     to_decimal_schubfach(bin_sig, bin_exp, regular)
 }
 
-/// Writes the shortest correctly rounded decimal representation of `value` to
-/// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
+/// Writes the shortest correctly rounded decimal representation of `value` to `buffer`.
+///
+/// # Safety
+///
+/// `buffer` must be valid for writes of at least `BUFFER_SIZE` (24 bytes).
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write<Float>(value: Float, mut buffer: *mut u8) -> *mut u8
 where
@@ -1216,6 +1307,9 @@ mod private {
     pub trait Sealed: crate::traits::Float {
         fn is_nonfinite(self) -> bool;
         fn format_nonfinite(self) -> &'static str;
+        /// # Safety
+        ///
+        /// `buffer` must be valid for writes of at least `BUFFER_SIZE` (24 bytes).
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8;
     }
 
@@ -1244,6 +1338,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
+            // Safety: Upheld by the caller according to the trait contract above.
             unsafe { crate::write(self, buffer) }
         }
     }
@@ -1273,6 +1368,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
+            // Safety: Upheld by the caller according to the trait contract above.
             unsafe { crate::write(self, buffer) }
         }
     }
