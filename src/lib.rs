@@ -57,6 +57,7 @@
     clippy::modulo_one,
     clippy::must_use_candidate,
     clippy::needless_doctest_main,
+    clippy::needless_late_init,
     clippy::never_loop,
     clippy::redundant_else,
     clippy::similar_names,
