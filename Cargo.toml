@@ -16,7 +16,7 @@ rust-version = "1.71"
 no-panic = { version = "0.1.36", optional = true }
 
 [dev-dependencies]
-num-bigint = "0.4"
+num-bigint = "0.5"
 num_cpus = "1.8"
 num-integer = "0.1"
 opt-level = "1"
