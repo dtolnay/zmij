@@ -697,25 +697,25 @@ static SSE_CONSTS: SseConstants = SseConstants {
 // individual BCD digits in SIMD lane order (caller must shuffle).
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn get_double_significand_bcd_unshuffled_sse(
+fn to_unshuffled_digits(
     #[allow(unused_variables)] value: u64,
     #[allow(unused_variables)] extra_digit: bool,
     bbccddee: u32,
     ffgghhii: u32,
-    c: *const SseConstants,
+    c: &SseConstants,
 ) -> __m128i {
-    let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
-    let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
-    let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
-    let div10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10).cast::<__m128i>()) };
+    let div10k = unsafe { _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>()) };
+    let neg10k = unsafe { _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>()) };
+    let div100 = unsafe { _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>()) };
+    let div10 = unsafe { _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>()) };
     #[cfg(target_feature = "sse4.1")]
-    let neg100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg100).cast::<__m128i>()) };
+    let neg100 = unsafe { _mm_load_si128(ptr::addr_of!(c.neg100).cast::<__m128i>()) };
     #[cfg(target_feature = "sse4.1")]
-    let neg10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10).cast::<__m128i>()) };
+    let neg10 = unsafe { _mm_load_si128(ptr::addr_of!(c.neg10).cast::<__m128i>()) };
     #[cfg(not(target_feature = "sse4.1"))]
-    let hundred = unsafe { _mm_load_si128(ptr::addr_of!((*c).hundred).cast::<__m128i>()) };
+    let hundred = unsafe { _mm_load_si128(ptr::addr_of!(c.hundred).cast::<__m128i>()) };
     #[cfg(not(target_feature = "sse4.1"))]
-    let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
+    let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>()) };
 
     // The BCD sequences are based on ones provided by Xiang JunBo.
     unsafe {
@@ -751,11 +751,7 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn get_double_unshuffled_digits_neon(
-    buffer: *mut u8,
-    value: u64,
-    extra_digit: bool,
-) -> uint8x16_t {
+unsafe fn to_unshuffled_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> uint8x16_t {
     // An optimized version for NEON by Dougall Johnson.
 
     use core::arch::aarch64::*;
@@ -897,7 +893,7 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
         use core::arch::aarch64::*;
 
         unsafe {
-            let unshuffled_digits = get_double_unshuffled_digits_neon(buffer, value, extra_digit);
+            let unshuffled_digits = to_unshuffled_digits(buffer, value, extra_digit);
             let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
@@ -934,13 +930,7 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
         unsafe {
-            let unshuffled_bcd = get_double_significand_bcd_unshuffled_sse(
-                value,
-                extra_digit,
-                bbccddee,
-                ffgghhii,
-                c,
-            );
+            let unshuffled_bcd = to_unshuffled_digits(value, extra_digit, bbccddee, ffgghhii, &*c);
             #[cfg(target_feature = "sse4.1")]
             let bcd = {
                 let bswap = _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>());
