@@ -136,6 +136,7 @@ const fn umul128(x: u64, y: u64) -> u128 {
     x as u128 * y as u128
 }
 
+#[cfg_attr(feature = "no-panic", inline)]
 const fn umul128_hi64(x: u64, y: u64) -> u64 {
     (umul128(x, y) >> 64) as u64
 }
@@ -199,6 +200,7 @@ impl FloatTraits for f32 {
 
     type SigType = u32;
 
+    #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
     }
@@ -210,6 +212,7 @@ impl FloatTraits for f64 {
 
     type SigType = u64;
 
+    #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
     }
@@ -280,6 +283,7 @@ impl Pow10SignificandsTable {
     const NUM_POW10S: usize = 617;
 
     // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
+    #[cfg_attr(feature = "no-panic", inline)]
     const fn compute(i: u32) -> uint128 {
         const STRIDE: u32 = POW10_MINOR.len() as u32;
         let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 11) % STRIDE) as usize) };
@@ -327,6 +331,7 @@ impl Pow10SignificandsTable {
         Pow10SignificandsTable { data }
     }
 
+    #[cfg_attr(feature = "no-panic", inline)]
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
         const DEC_EXP_MIN: i32 = -292;
         let i = dec_exp - DEC_EXP_MIN;
@@ -535,6 +540,7 @@ fn to_bcd8(abcdefgh: u64) -> u64 {
     a_b_c_d_e_f_g_h.to_be()
 }
 
+#[cfg_attr(feature = "no-panic", inline)]
 unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
     unsafe {
         *buffer = b'0' + digit as u8;
@@ -542,6 +548,7 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
     }
 }
 
+#[cfg_attr(feature = "no-panic", inline)]
 unsafe fn write8(buffer: *mut u8, value: u64) {
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
