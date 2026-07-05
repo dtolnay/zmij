@@ -5,7 +5,7 @@ use num_bigint::BigUint as Uint;
 const _: () = {
     let static_data =
         mem::size_of_val(&crate::POW10_SIGNIFICANDS) + mem::size_of_val(&crate::DIGITS2);
-    if crate::Pow10SignificandsTable::COMPRESS {
+    if cfg!(small) {
         assert!(static_data == 200);
     } else {
         assert!(static_data == 10120); // 9.9K

@@ -10,6 +10,7 @@ fn main() {
 
     if rustc >= 80 {
         println!("cargo:rustc-check-cfg=cfg(exhaustive)");
+        println!("cargo:rustc-check-cfg=cfg(small)");
         println!("cargo:rustc-check-cfg=cfg(zmij_no_select_unpredictable)");
     }
 
