@@ -901,8 +901,7 @@ where
     let exp_shift = unsafe { compute_exp_shift::<UInt, false>(bin_exp as i32, dec_exp) };
     let mut pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
 
-    // Fallback to Schubfach to guarantee correctness in boundary cases. This
-    // requires switching to strict overestimates of powers of 10.
+    // Shubfach requires strict overestimates of powers of 10.
     if num_bits == 64 {
         pow10.lo += 1;
     } else {
@@ -912,15 +911,15 @@ where
     // Shift the significand so that boundaries are integer.
     // The two extra bits act as guard and sticky for correct rounding.
     let bin_sig_shifted = bin_sig << 2;
-    let lsb = bin_sig & UInt::from(1);
+    let odd = bin_sig & UInt::from(1);
 
     // Compute the lower and upper bounds of the rounding interval by
     // multiplying them by the power of 10 and applying modified rounding.
     let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
-    let mut lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
+    let mut lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + odd;
     lower = (lower + UInt::from(3)) >> 2; // ceil
     let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
-    let mut upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
+    let mut upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - odd;
     upper = upper >> 2; // floor
 
     // The idea of using a single shorter candidate is by Cassio Neri.
@@ -1049,6 +1048,7 @@ where
             exp: dec_exp,
         };
     }
+    // Fallback to Schubfach to guarantee correctness in boundary cases.
     to_decimal_schubfach(bin_sig, bin_exp, regular)
 }
 
