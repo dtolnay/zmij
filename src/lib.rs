@@ -182,7 +182,7 @@ trait FloatTraits: traits::Float {
     type SigType: traits::UInt;
     const IMPLICIT_BIT: Self::SigType;
 
-    type SigStrDigitsType;
+    type DecDigitsType;
 
     fn to_bits(self) -> Self::SigType;
 
@@ -201,7 +201,7 @@ trait FloatTraits: traits::Float {
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self>;
+    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -210,7 +210,7 @@ impl FloatTraits for f32 {
 
     type SigType = u32;
 
-    type SigStrDigitsType = u64;
+    type DecDigitsType = u64;
 
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
@@ -218,8 +218,8 @@ impl FloatTraits for f32 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self> {
-        unsafe { to_str_32(buffer, value, extra_digit) }
+    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
+        unsafe { to_digits_32(buffer, value, extra_digit) }
     }
 }
 
@@ -230,14 +230,14 @@ impl FloatTraits for f64 {
     type SigType = u64;
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-    type SigStrDigitsType = uint16x8_t;
+    type DecDigitsType = uint16x8_t;
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-    type SigStrDigitsType = __m128i;
+    type DecDigitsType = __m128i;
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
-    type SigStrDigitsType = [u64; 2];
+    type DecDigitsType = [u64; 2];
 
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
@@ -245,8 +245,8 @@ impl FloatTraits for f64 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self> {
-        unsafe { to_str_64(buffer, value, extra_digit) }
+    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
+        unsafe { to_digits_64(buffer, value, extra_digit) }
     }
 }
 
@@ -301,7 +301,7 @@ const POW10_FIXUPS: [u32; 20] = [
 
 // 128-bit significands of powers of 10 rounded down.
 #[repr(C, align(64))]
-struct Pow10SignificandsTable {
+struct Pow10SignificandTable {
     data: [u64; if Self::COMPRESS {
         0
     } else {
@@ -309,7 +309,7 @@ struct Pow10SignificandsTable {
     }],
 }
 
-impl Pow10SignificandsTable {
+impl Pow10SignificandTable {
     const COMPRESS: bool = cfg!(opt_level = "s");
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
     const NUM_POW10S: usize = 617;
@@ -360,7 +360,7 @@ impl Pow10SignificandsTable {
             i += 1;
         }
 
-        Pow10SignificandsTable { data }
+        Pow10SignificandTable { data }
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
@@ -410,7 +410,7 @@ impl Pow10SignificandsTable {
     }
 }
 
-static POW10_SIGNIFICANDS: Pow10SignificandsTable = Pow10SignificandsTable::new();
+static POW10_SIGNIFICANDS: Pow10SignificandTable = Pow10SignificandTable::new();
 
 // Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
 // floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
@@ -751,14 +751,14 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
     }
 }
 
-struct SigStr<Float: FloatTraits> {
-    digits: Float::SigStrDigitsType,
+struct DecDigits<Float: FloatTraits> {
+    digits: Float::DecDigitsType,
     num_digits: usize,
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<f64> {
+unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
@@ -770,13 +770,13 @@ unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigS
         *buffer = unsafe { write_if(*buffer, abbccddee / 100_000_000, extra_digit) };
         let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
         if ffgghhii == 0 {
-            return SigStr {
+            return DecDigits {
                 digits: [hi + ZEROS, ZEROS],
                 num_digits: count_trailing_nonzeros(hi),
             };
         }
         let lo = to_bcd8(u64::from(ffgghhii));
-        SigStr {
+        DecDigits {
             digits: [hi + ZEROS, lo + ZEROS],
             num_digits: 8 + count_trailing_nonzeros(lo),
         }
@@ -892,7 +892,7 @@ unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigS
             let is_not_zero: uint16x8_t =
                 vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
             let zeros: u64 = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
-            SigStr {
+            DecDigits {
                 digits: str,
                 num_digits: 16 - (zeros.leading_zeros() as usize >> 2),
             }
@@ -937,7 +937,7 @@ unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigS
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
             let mask = _mm_movemask_epi8(mask128) as u32;
             let len = 32 - mask.leading_zeros() as usize;
-            SigStr {
+            DecDigits {
                 digits: _mm_or_si128(bcd, zeros),
                 num_digits: len,
             }
@@ -947,10 +947,10 @@ unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigS
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_str_32(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<f32> {
+unsafe fn to_digits_32(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<f32> {
     *buffer = unsafe { write_if(*buffer, (value / 100_000_000) as u32, extra_digit) };
     let bcd = to_bcd8(value % 100_000_000);
-    SigStr {
+    DecDigits {
         digits: bcd + ZEROS,
         num_digits: count_trailing_nonzeros(bcd),
     }
@@ -1178,10 +1178,10 @@ where
     // Write significand.
     let length = unsafe {
         let mut end = buffer.add(1);
-        let sig_str = Float::to_str(&mut end, dec.sig as u64, extra_digit);
-        end.cast::<Float::SigStrDigitsType>()
-            .write_unaligned(sig_str.digits);
-        end.offset_from(buffer.add(1)) as usize + sig_str.num_digits
+        let dig = Float::to_digits(&mut end, dec.sig as u64, extra_digit);
+        end.cast::<Float::DecDigitsType>()
+            .write_unaligned(dig.digits);
+        end.offset_from(buffer.add(1)) as usize + dig.num_digits
     };
 
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
