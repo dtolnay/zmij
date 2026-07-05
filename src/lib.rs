@@ -77,6 +77,8 @@ mod stdarch_x86;
 mod tests;
 mod traits;
 
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+use crate::stdarch_x86::*;
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
@@ -494,6 +496,73 @@ const NEG10: u32 = (1 << 8) - 10;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[repr(C, align(64))]
+struct SseConstants {
+    div10k: u128,
+    neg10k: u128,
+    div100: u128,
+    div10: u128,
+    #[cfg(target_feature = "sse4.1")]
+    neg100: u128,
+    #[cfg(target_feature = "sse4.1")]
+    neg10: u128,
+    #[cfg(target_feature = "sse4.1")]
+    bswap: u128,
+    #[cfg(not(target_feature = "sse4.1"))]
+    hundred: u128,
+    #[cfg(not(target_feature = "sse4.1"))]
+    moddiv10: u128,
+    zeros: u128,
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+impl SseConstants {
+    const fn splat64(x: u64) -> u128 {
+        ((x as u128) << 64) | x as u128
+    }
+
+    const fn splat32(x: u32) -> u128 {
+        Self::splat64(((x as u64) << 32) | x as u64)
+    }
+
+    const fn splat16(x: u16) -> u128 {
+        Self::splat32(((x as u32) << 16) | x as u32)
+    }
+
+    #[cfg(target_feature = "sse4.1")]
+    const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
+        ((h as u64) << 56)
+            | ((g as u64) << 48)
+            | ((f as u64) << 40)
+            | ((e as u64) << 32)
+            | ((d as u64) << 24)
+            | ((c as u64) << 16)
+            | ((b as u64) << 8)
+            | a as u64
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+static SSE_CONSTS: SseConstants = SseConstants {
+    div10k: SseConstants::splat64(DIV10K_SIG as u64),
+    neg10k: SseConstants::splat64(NEG10K as u64),
+    div100: SseConstants::splat32(DIV100_SIG),
+    div10: SseConstants::splat16(((1u32 << 16) / 10 + 1) as u16),
+    #[cfg(target_feature = "sse4.1")]
+    neg100: SseConstants::splat32(NEG100),
+    #[cfg(target_feature = "sse4.1")]
+    neg10: SseConstants::splat16((1 << 8) - 10),
+    #[cfg(target_feature = "sse4.1")]
+    bswap: SseConstants::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
+        | (SseConstants::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
+    #[cfg(not(target_feature = "sse4.1"))]
+    hundred: SseConstants::splat32(100),
+    #[cfg(not(target_feature = "sse4.1"))]
+    moddiv10: SseConstants::splat16(10 * (1 << 8) - 1),
+    zeros: SseConstants::splat64(ZEROS),
+};
+
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd8(abcdefgh: u64) -> u64 {
     // An optimization from Xiang JunBo.
@@ -523,6 +592,86 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
 unsafe fn write8(buffer: *mut u8, value: u64) {
     unsafe {
         buffer.cast::<u64>().write_unaligned(value);
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+unsafe fn get_double_significand_bcd_unshuffled_sse(
+    #[allow(unused_variables)] value: u64,
+    #[allow(unused_variables)] extra_digit: bool,
+    bbccddee: u32,
+    ffgghhii: u32,
+    c: *const SseConstants,
+) -> __m128i {
+    let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
+    let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
+    let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
+    let div10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10).cast::<__m128i>()) };
+    #[cfg(target_feature = "sse4.1")]
+    let neg100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg100).cast::<__m128i>()) };
+    #[cfg(target_feature = "sse4.1")]
+    let neg10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10).cast::<__m128i>()) };
+    #[cfg(not(target_feature = "sse4.1"))]
+    let hundred = unsafe { _mm_load_si128(ptr::addr_of!((*c).hundred).cast::<__m128i>()) };
+    #[cfg(not(target_feature = "sse4.1"))]
+    let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
+
+    // The BCD sequences are based on ones provided by Xiang JunBo.
+    unsafe {
+        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
+        let y: __m128i = _mm_add_epi64(
+            x,
+            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
+        );
+
+        #[cfg(target_feature = "sse4.1")]
+        {
+            // _mm_mullo_epi32 is SSE 4.1
+            let z: __m128i = _mm_add_epi64(
+                y,
+                _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
+            );
+            let big_endian_bcd: __m128i =
+                _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)));
+            big_endian_bcd
+        }
+
+        #[cfg(not(target_feature = "sse4.1"))]
+        {
+            let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
+            let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
+            let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
+            let unshuffled_bcd: __m128i = _mm_sub_epi16(
+                _mm_slli_epi16(z, 8),
+                _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
+            );
+            unshuffled_bcd
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+unsafe fn get_double_significand_bcd_sse(
+    value: u64,
+    extra_digit: bool,
+    bbccddee: u32,
+    ffgghhii: u32,
+    c: *const SseConstants,
+) -> __m128i {
+    let unshuffled_bcd = unsafe {
+        get_double_significand_bcd_unshuffled_sse(value, extra_digit, bbccddee, ffgghhii, c)
+    };
+    #[cfg(target_feature = "sse4.1")]
+    {
+        let bswap = unsafe { _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>()) };
+        // SSSE3
+        unsafe { _mm_shuffle_epi8(unshuffled_bcd, bswap) }
+    }
+    #[cfg(not(target_feature = "sse4.1"))]
+    {
+        unsafe { _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3)) }
     }
 }
 
@@ -687,8 +836,6 @@ where
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     {
-        use crate::stdarch_x86::*;
-
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
         let a = abbccddee / 100_000_000;
@@ -696,132 +843,22 @@ where
 
         buffer = unsafe { write_if(buffer, a, extra_digit) };
 
-        #[repr(C, align(64))]
-        struct Consts {
-            div10k: u128,
-            neg10k: u128,
-            div100: u128,
-            div10: u128,
-            #[cfg(target_feature = "sse4.1")]
-            neg100: u128,
-            #[cfg(target_feature = "sse4.1")]
-            neg10: u128,
-            #[cfg(target_feature = "sse4.1")]
-            bswap: u128,
-            #[cfg(not(target_feature = "sse4.1"))]
-            hundred: u128,
-            #[cfg(not(target_feature = "sse4.1"))]
-            moddiv10: u128,
-            zeros: u128,
-        }
-
-        impl Consts {
-            const fn splat64(x: u64) -> u128 {
-                ((x as u128) << 64) | x as u128
-            }
-
-            const fn splat32(x: u32) -> u128 {
-                Self::splat64(((x as u64) << 32) | x as u64)
-            }
-
-            const fn splat16(x: u16) -> u128 {
-                Self::splat32(((x as u32) << 16) | x as u32)
-            }
-
-            #[cfg(target_feature = "sse4.1")]
-            const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
-                ((h as u64) << 56)
-                    | ((g as u64) << 48)
-                    | ((f as u64) << 40)
-                    | ((e as u64) << 32)
-                    | ((d as u64) << 24)
-                    | ((c as u64) << 16)
-                    | ((b as u64) << 8)
-                    | a as u64
-            }
-        }
-
-        static CONSTS: Consts = Consts {
-            div10k: Consts::splat64(DIV10K_SIG as u64),
-            neg10k: Consts::splat64(NEG10K as u64),
-            div100: Consts::splat32(DIV100_SIG),
-            div10: Consts::splat16(((1u32 << 16) / 10 + 1) as u16),
-            #[cfg(target_feature = "sse4.1")]
-            neg100: Consts::splat32(NEG100),
-            #[cfg(target_feature = "sse4.1")]
-            neg10: Consts::splat16((1 << 8) - 10),
-            #[cfg(target_feature = "sse4.1")]
-            bswap: Consts::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
-                | (Consts::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
-            #[cfg(not(target_feature = "sse4.1"))]
-            hundred: Consts::splat32(100),
-            #[cfg(not(target_feature = "sse4.1"))]
-            moddiv10: Consts::splat16(10 * (1 << 8) - 1),
-            zeros: Consts::splat64(ZEROS),
-        };
-
-        let mut c = ptr::addr_of!(CONSTS);
+        let mut c = ptr::addr_of!(SSE_CONSTS);
         // Load constants from memory.
         unsafe {
             asm!("/*{0}*/", inout(reg) c);
         }
 
-        let div10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10k).cast::<__m128i>()) };
-        let neg10k = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10k).cast::<__m128i>()) };
-        let div100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div100).cast::<__m128i>()) };
-        let div10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).div10).cast::<__m128i>()) };
-        #[cfg(target_feature = "sse4.1")]
-        let neg100 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg100).cast::<__m128i>()) };
-        #[cfg(target_feature = "sse4.1")]
-        let neg10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).neg10).cast::<__m128i>()) };
-        #[cfg(target_feature = "sse4.1")]
-        let bswap = unsafe { _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>()) };
-        #[cfg(not(target_feature = "sse4.1"))]
-        let hundred = unsafe { _mm_load_si128(ptr::addr_of!((*c).hundred).cast::<__m128i>()) };
-        #[cfg(not(target_feature = "sse4.1"))]
-        let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!((*c).moddiv10).cast::<__m128i>()) };
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
-        // The BCD sequences are based on ones provided by Xiang JunBo.
         unsafe {
-            let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
-            let y: __m128i = _mm_add_epi64(
-                x,
-                _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
-            );
-
-            #[cfg(target_feature = "sse4.1")]
-            let bcd: __m128i = {
-                // _mm_mullo_epi32 is SSE 4.1
-                let z: __m128i = _mm_add_epi64(
-                    y,
-                    _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
-                );
-                let big_endian_bcd: __m128i =
-                    _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)));
-                // SSSE3
-                _mm_shuffle_epi8(big_endian_bcd, bswap)
-            };
-
-            #[cfg(not(target_feature = "sse4.1"))]
-            let bcd: __m128i = {
-                let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
-                let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
-                let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
-                let bcd_shuffled: __m128i = _mm_sub_epi16(
-                    _mm_slli_epi16(z, 8),
-                    _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
-                );
-                _mm_shuffle_epi32(bcd_shuffled, _MM_SHUFFLE(0, 1, 2, 3))
-            };
-
-            let digits = _mm_or_si128(bcd, zeros);
+            let bcd = get_double_significand_bcd_sse(value, extra_digit, bbccddee, ffgghhii, c);
 
             // Count leading zeros.
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
             let mask = _mm_movemask_epi8(mask128) as u32;
             let len = 32 - mask.leading_zeros() as usize;
-
+            let digits = _mm_or_si128(bcd, zeros);
             _mm_storeu_si128(buffer.cast::<__m128i>(), digits);
             buffer.add(len)
         }
