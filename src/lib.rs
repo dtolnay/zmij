@@ -671,30 +671,6 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-#[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn get_double_significand_bcd_sse(
-    value: u64,
-    extra_digit: bool,
-    bbccddee: u32,
-    ffgghhii: u32,
-    c: *const SseConstants,
-) -> __m128i {
-    let unshuffled_bcd = unsafe {
-        get_double_significand_bcd_unshuffled_sse(value, extra_digit, bbccddee, ffgghhii, c)
-    };
-    #[cfg(target_feature = "sse4.1")]
-    {
-        let bswap = unsafe { _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>()) };
-        // SSSE3
-        unsafe { _mm_shuffle_epi8(unshuffled_bcd, bswap) }
-    }
-    #[cfg(not(target_feature = "sse4.1"))]
-    {
-        unsafe { _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3)) }
-    }
-}
-
 // Writes a significand and removes trailing zeros. value has up to 17 decimal
 // digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
 // (8-9 for normals) for float. The significant digits start from buffer[1].
@@ -872,7 +848,21 @@ where
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
         unsafe {
-            let bcd = get_double_significand_bcd_sse(value, extra_digit, bbccddee, ffgghhii, c);
+            let unshuffled_bcd = get_double_significand_bcd_unshuffled_sse(
+                value,
+                extra_digit,
+                bbccddee,
+                ffgghhii,
+                c,
+            );
+            #[cfg(target_feature = "sse4.1")]
+            let bcd = {
+                let bswap = _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>());
+                // SSSE3
+                _mm_shuffle_epi8(unshuffled_bcd, bswap)
+            };
+            #[cfg(not(target_feature = "sse4.1"))]
+            let bcd = _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3));
 
             // Count leading zeros.
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
