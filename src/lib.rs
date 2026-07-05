@@ -403,7 +403,7 @@ struct ExpShiftTable {
     data: [u8; if Self::ENABLE {
         f64::EXP_MASK as usize + 1
     } else {
-        1
+        0
     }],
 }
 
@@ -415,7 +415,7 @@ static EXP_SHIFTS: ExpShiftTable = {
     let mut data = [0u8; if ExpShiftTable::ENABLE {
         f64::EXP_MASK as usize + 1
     } else {
-        1
+        0
     }];
 
     let mut raw_exp = 0;
