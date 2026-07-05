@@ -329,14 +329,14 @@ impl Pow10SignificandsTable {
 
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
         const DEC_EXP_MIN: i32 = -292;
+        let i = dec_exp - DEC_EXP_MIN;
         if Self::COMPRESS {
-            return Self::compute((dec_exp - DEC_EXP_MIN) as u32);
+            return Self::compute(i as u32);
         }
         if !Self::SPLIT_TABLES {
-            let index = ((dec_exp - DEC_EXP_MIN) * 2) as usize;
             return uint128 {
-                hi: unsafe { *self.data.get_unchecked(index) },
-                lo: unsafe { *self.data.get_unchecked(index + 1) },
+                hi: unsafe { *self.data.get_unchecked((i * 2) as usize) },
+                lo: unsafe { *self.data.get_unchecked((i * 2 + 1) as usize) },
             };
         }
 
