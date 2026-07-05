@@ -203,6 +203,8 @@ trait FloatTraits: traits::Float {
 
     type DecDigitsType;
 
+    const SPLIT_LAST_DIGIT: bool;
+
     fn to_bits(self) -> Self::SigType;
 
     fn is_negative(bits: Self::SigType) -> bool {
@@ -231,6 +233,8 @@ impl FloatTraits for f32 {
 
     type DecDigitsType = u64;
 
+    const SPLIT_LAST_DIGIT: bool = false;
+
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
@@ -257,6 +261,12 @@ impl FloatTraits for f64 {
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
     type DecDigitsType = [u64; 2];
+
+    const SPLIT_LAST_DIGIT: bool = cfg!(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        not(miri)
+    ));
 
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
@@ -756,7 +766,11 @@ fn to_unshuffled_digits(
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_unshuffled_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> uint8x16_t {
+unsafe fn to_unshuffled_digits<const SPLIT_LAST_DIGIT: bool>(
+    buffer: *mut u8,
+    value: u64,
+    extra_digit: bool,
+) -> uint8x16_t {
     // An optimized version for NEON by Dougall Johnson.
 
     const NEG10K: i32 = -10000 + 0x10000;
@@ -805,14 +819,16 @@ unsafe fn to_unshuffled_digits(buffer: *mut u8, value: u64, extra_digit: bool) -
     let abbccddee = (umul128(value, c.mul_const) >> 90) as u64;
     let ffgghhii = value - abbccddee * hundred_million;
 
-    // We could probably make this bit faster, but we're preferring to
-    // reuse the constants for now.
-    let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
-    let bbccddee = abbccddee - a * hundred_million;
+    let mut bbccddee = abbccddee;
+    if !SPLIT_LAST_DIGIT {
+        let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
+        bbccddee = abbccddee - a * hundred_million;
+        unsafe {
+            write_if(buffer, a as u32, extra_digit);
+        }
+    }
 
     unsafe {
-        write_if(buffer, a as u32, extra_digit);
-
         let ffgghhii_bbccddee_64: uint64x1_t =
             mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
         let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
@@ -894,7 +910,7 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         unsafe {
-            let unshuffled_digits = to_unshuffled_digits(buffer, value, extra_digit);
+            let unshuffled_digits = to_unshuffled_digits::<true>(buffer, value, extra_digit);
             let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
@@ -969,6 +985,7 @@ unsafe fn to_digits_32(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
 struct ToDecimalResult {
     sig: i64,
     exp: i32,
+    last_digit: u8,
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
@@ -1010,6 +1027,7 @@ where
         return ToDecimalResult {
             sig: shorter.into() as i64,
             exp: dec_exp,
+            last_digit: 0,
         };
     }
 
@@ -1019,6 +1037,7 @@ where
     ToDecimalResult {
         sig: hint::select_unpredictable(lower == upper, lower, dec_sig).into() as i64,
         exp: dec_exp,
+        last_digit: 0,
     }
 }
 
@@ -1121,16 +1140,38 @@ where
         }
 
         let even = 1 - (bin_sig.into() & 1);
+        if Float::SPLIT_LAST_DIGIT {
+            let round_down = scaled_sig_mod10 < scaled_half_ulp + even;
+            let round_up = ten < upper;
+            let round = i32::from(round_down) + i32::from(round_up);
+            let d = digit as u8 + u8::from(cmp >= 0);
+            return ToDecimalResult {
+                sig: div10 as i64 + i64::from(round_up),
+                exp: dec_exp,
+                last_digit: if round != 0 { 0 } else { d },
+            };
+        }
         let shorter = (integral.into() - digit) as i64;
         let longer = (integral.into() + u64::from(cmp >= 0)) as i64;
         let dec_sig = select_if_less(scaled_sig_mod10, scaled_half_ulp + even, shorter, longer);
         return ToDecimalResult {
             sig: select_if_less(ten, upper, shorter + 10, dec_sig),
             exp: dec_exp,
+            last_digit: 0,
         };
     }
     // Fallback to Schubfach to guarantee correctness in boundary cases.
-    to_decimal_schubfach(bin_sig, bin_exp, regular)
+    let r = to_decimal_schubfach(bin_sig, bin_exp, regular);
+    if !Float::SPLIT_LAST_DIGIT {
+        return r;
+    }
+    let div10_sig64 = (1u64 << 63) / 5 + 1;
+    let top = umul128_hi64(r.sig as u64, div10_sig64) as i64;
+    ToDecimalResult {
+        sig: top,
+        exp: r.exp,
+        last_digit: (r.sig - top * 10) as u8,
+    }
 }
 
 /// Writes the shortest correctly rounded decimal representation of `value` to
@@ -1152,7 +1193,11 @@ where
 
     let mut dec;
     let threshold = if Float::NUM_BITS == 64 {
-        10_000_000_000_000_000
+        if Float::SPLIT_LAST_DIGIT {
+            1_000_000_000_000_000
+        } else {
+            10_000_000_000_000_000
+        }
     } else {
         100_000_000
     };
@@ -1168,6 +1213,9 @@ where
         dec = to_decimal_schubfach(bin_sig, i64::from(1 - Float::EXP_OFFSET), true);
         while dec.sig < threshold {
             dec.sig *= 10;
+            dec.exp -= 1;
+        }
+        if Float::SPLIT_LAST_DIGIT {
             dec.exp -= 1;
         }
     } else {
@@ -1188,10 +1236,23 @@ where
     let length = unsafe {
         let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit);
         buffer
-            .add(usize::from(extra_digit) + 1)
+            .add(usize::from(extra_digit) + usize::from(!Float::SPLIT_LAST_DIGIT))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
-        usize::from(extra_digit) + dig.num_digits
+        if Float::SPLIT_LAST_DIGIT {
+            buffer
+                .add(usize::from(extra_digit) + 16)
+                .write(b'0' + dec.last_digit);
+            usize::from(extra_digit)
+                + if dec.last_digit != 0 {
+                    17
+                } else {
+                    dig.num_digits
+                }
+                - 1
+        } else {
+            usize::from(extra_digit) + dig.num_digits
+        }
     };
 
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
