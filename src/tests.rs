@@ -3,12 +3,13 @@ use core::mem;
 use num_bigint::BigUint as Uint;
 
 const _: () = {
-    let static_data =
-        mem::size_of_val(&crate::POW10_SIGNIFICANDS) + mem::size_of_val(&crate::DIGITS2);
+    let static_data = mem::size_of_val(&crate::POW10_SIGNIFICANDS)
+        + mem::size_of_val(&crate::EXP_SHIFTS)
+        + mem::size_of_val(&crate::DIGITS2);
     if cfg!(small) {
         assert!(static_data == 200);
     } else {
-        assert!(static_data == 10120); // 9.9K
+        assert!(static_data == 12168); // 11.9K
     }
 };
 
