@@ -262,10 +262,9 @@ impl FloatTraits for f64 {
     )))]
     type DecDigitsType = [u64; 2];
 
-    const SPLIT_LAST_DIGIT: bool = cfg!(all(
-        target_arch = "aarch64",
-        target_feature = "neon",
-        not(miri)
+    const SPLIT_LAST_DIGIT: bool = cfg!(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     ));
 
     #[cfg_attr(feature = "no-panic", inline)]
@@ -881,7 +880,11 @@ struct DecDigits<Float: FloatTraits> {
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<f64> {
+unsafe fn to_digits_64(
+    #[allow(unused_variables)] buffer: *mut u8,
+    value: u64,
+    extra_digit: bool,
+) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
@@ -931,12 +934,6 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
     {
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        let a = abbccddee / 100_000_000;
-        let bbccddee = abbccddee % 100_000_000;
-
-        unsafe {
-            write_if(buffer, a, extra_digit);
-        }
 
         let mut c = ptr::addr_of!(SSE_CONSTS);
         // Load constants from memory.
@@ -947,7 +944,7 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
         unsafe {
-            let unshuffled_bcd = to_unshuffled_digits(value, extra_digit, bbccddee, ffgghhii, &*c);
+            let unshuffled_bcd = to_unshuffled_digits(value, extra_digit, abbccddee, ffgghhii, &*c);
             #[cfg(target_feature = "sse4.1")]
             let bcd = {
                 let bswap = _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>());
