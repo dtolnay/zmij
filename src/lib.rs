@@ -171,6 +171,18 @@ where
     }
 }
 
+// Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
+// floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
+const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
+    debug_assert!(bin_exp >= -1334 && bin_exp <= 2620);
+    // log10_3_over_4_sig = -log10(3/4) * 2**log10_2_exp rounded to a power of 2
+    const LOG10_3_OVER_4_SIG: i32 = 131_072;
+    // log10_2_sig = round(log10(2) * 2**log10_2_exp)
+    const LOG10_2_SIG: i32 = 315_653;
+    const LOG10_2_EXP: i32 = 20;
+    (bin_exp * LOG10_2_SIG - !regular as i32 * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
+}
+
 trait FloatTraits: traits::Float {
     const NUM_BITS: i32;
     const NUM_SIG_BITS: i32 = Self::MANTISSA_DIGITS as i32 - 1;
@@ -412,18 +424,6 @@ impl Pow10SignificandTable {
 
 static POW10_SIGNIFICANDS: Pow10SignificandTable = Pow10SignificandTable::new();
 
-// Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
-// floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
-const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
-    debug_assert!(bin_exp >= -1334 && bin_exp <= 2620);
-    // log10_3_over_4_sig = -log10(3/4) * 2**log10_2_exp rounded to a power of 2
-    const LOG10_3_OVER_4_SIG: i32 = 131_072;
-    // log10_2_sig = round(log10(2) * 2**log10_2_exp)
-    const LOG10_2_SIG: i32 = 315_653;
-    const LOG10_2_EXP: i32 = 20;
-    (bin_exp * LOG10_2_SIG - !regular as i32 * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
-}
-
 #[inline]
 const fn do_compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
     debug_assert!(dec_exp >= -350 && dec_exp <= 350);
@@ -502,13 +502,7 @@ static EXP_STRINGS: ExpStringTable = {
         if abs_e >= 100 {
             val = (val << 8) | (abs_e / 100 + b'0' as u64);
         }
-        let len = if abs_e >= 100 {
-            5
-        } else if abs_e >= 10 {
-            4
-        } else {
-            3
-        };
+        let len = 3 + (abs_e >= 10) as u64 + (abs_e >= 100) as u64;
         data[(e + ExpStringTable::OFFSET) as usize] = (len << 48)
             | (val << 16)
             | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
