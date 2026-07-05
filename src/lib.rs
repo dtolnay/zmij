@@ -78,7 +78,27 @@ mod tests;
 mod traits;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-use crate::stdarch_x86::*;
+use crate::stdarch_x86::{
+    __m128i, _mm_add_epi64, _mm_cmpgt_epi8, _mm_load_si128, _mm_movemask_epi8, _mm_mul_epu32,
+    _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128, _mm_set_epi64x, _mm_setzero_si128,
+    _mm_srli_epi64, _mm_storeu_si128,
+};
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "sse2",
+    target_feature = "sse4.1",
+    not(miri)
+))]
+use crate::stdarch_x86::{_mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32};
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "sse2",
+    not(target_feature = "sse4.1"),
+    not(miri)
+))]
+use crate::stdarch_x86::{
+    _mm_shuffle_epi32, _mm_slli_epi16, _mm_slli_epi32, _mm_srli_epi16, _mm_sub_epi16, _MM_SHUFFLE,
+};
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
