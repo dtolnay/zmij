@@ -910,46 +910,34 @@ where
     }
 
     // Shift the significand so that boundaries are integer.
-    const BOUND_SHIFT: u32 = 2;
-    let bin_sig_shifted = bin_sig << BOUND_SHIFT;
-
-    // Compute the estimates of lower and upper bounds of the rounding interval
-    // by multiplying them by the power of 10 and applying modified rounding.
+    // The two extra bits act as guard and sticky for correct rounding.
+    let bin_sig_shifted = bin_sig << 2;
     let lsb = bin_sig & UInt::from(1);
+
+    // Compute the lower and upper bounds of the rounding interval by
+    // multiplying them by the power of 10 and applying modified rounding.
     let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
-    let lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
+    let mut lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + lsb;
+    lower = (lower + UInt::from(3)) >> 2; // ceil
     let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
-    let upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
+    let mut upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - lsb;
+    upper = upper >> 2; // floor
 
     // The idea of using a single shorter candidate is by Cassio Neri.
     // It is less or equal to the upper bound by construction.
-    let shorter = (upper >> BOUND_SHIFT) / UInt::from(10) * UInt::from(10);
-    if (shorter << BOUND_SHIFT) >= lower {
+    let shorter: UInt = upper / UInt::from(10) * UInt::from(10);
+    if shorter >= lower {
         return ToDecimalResult {
             sig: shorter.into() as i64,
             exp: dec_exp,
         };
     }
 
-    let scaled_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
-    let longer_below = scaled_sig >> BOUND_SHIFT;
-    let longer_above = longer_below + UInt::from(1);
-
-    // Pick the closest of longer_below and longer_above and check if it's in
-    // the rounding interval.
-    let cmp = scaled_sig
-        .wrapping_sub((longer_below + longer_above) << 1)
-        .to_signed();
-    let below_closer = cmp < UInt::from(0).to_signed()
-        || (cmp == UInt::from(0).to_signed() && (longer_below & UInt::from(1)) == UInt::from(0));
-    let below_in = (longer_below << BOUND_SHIFT) >= lower;
-    let dec_sig = if below_closer & below_in {
-        longer_below
-    } else {
-        longer_above
-    };
+    // The simplified longer candidate selection is by Russ Cox.
+    let mut dec_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
+    dec_sig = (dec_sig + UInt::from(1) + ((dec_sig >> 2) & UInt::from(1))) >> 2; // round
     ToDecimalResult {
-        sig: dec_sig.into() as i64,
+        sig: hint::select_unpredictable(lower == upper, lower, dec_sig).into() as i64,
         exp: dec_exp,
     }
 }
