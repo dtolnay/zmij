@@ -101,7 +101,14 @@ use crate::stdarch_x86::{
 };
 use crate::traits::Float as _;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-use core::arch::aarch64::{uint16x8_t, uint8x16_t};
+use core::arch::aarch64::{
+    int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, vaddq_u16, vcgtzq_s8,
+    vdupq_n_s8, vget_lane_u64, vmla_n_s32, vmlaq_n_s16, vmlaq_n_s32, vqdmulh_n_s32, vqdmulhq_n_s16,
+    vqdmulhq_n_s32, vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32,
+    vreinterpret_u32_s32, vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32,
+    vreinterpretq_s8_u8, vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u8_s16,
+    vrev64q_u8, vshll_n_u16, vshr_n_u32, vshrn_n_u16,
+};
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
@@ -752,8 +759,6 @@ fn to_unshuffled_digits(
 unsafe fn to_unshuffled_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> uint8x16_t {
     // An optimized version for NEON by Dougall Johnson.
 
-    use core::arch::aarch64::*;
-
     const NEG10K: i32 = -10000 + 0x10000;
 
     #[repr(C, align(64))]
@@ -888,8 +893,6 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
-        use core::arch::aarch64::*;
-
         unsafe {
             let unshuffled_digits = to_unshuffled_digits(buffer, value, extra_digit);
             let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
