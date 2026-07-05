@@ -1201,7 +1201,11 @@ where
         let len = (exp_data >> 48) as usize;
         exp_data = exp_data.to_le();
         unsafe {
-            ptr::copy_nonoverlapping(ptr::addr_of!(exp_data).cast::<u8>(), buffer, 5);
+            ptr::copy_nonoverlapping(
+                ptr::addr_of!(exp_data).cast::<u8>(),
+                buffer,
+                if Float::MAX_10_EXP >= 100 { 5 } else { 4 },
+            );
             return buffer.add(len);
         }
     }
