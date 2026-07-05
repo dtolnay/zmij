@@ -81,7 +81,7 @@ mod traits;
 use crate::stdarch_x86::{
     __m128i, _mm_add_epi64, _mm_cmpgt_epi8, _mm_load_si128, _mm_movemask_epi8, _mm_mul_epu32,
     _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128, _mm_set_epi64x, _mm_setzero_si128,
-    _mm_srli_epi64, _mm_storeu_si128,
+    _mm_srli_epi64,
 };
 #[cfg(all(
     target_arch = "x86_64",
@@ -100,6 +100,8 @@ use crate::stdarch_x86::{
     _mm_shuffle_epi32, _mm_slli_epi16, _mm_slli_epi32, _mm_srli_epi16, _mm_sub_epi16, _MM_SHUFFLE,
 };
 use crate::traits::Float as _;
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+use core::arch::aarch64::uint16x8_t;
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
@@ -180,6 +182,8 @@ trait FloatTraits: traits::Float {
     type SigType: traits::UInt;
     const IMPLICIT_BIT: Self::SigType;
 
+    type SigStrDigitsType;
+
     fn to_bits(self) -> Self::SigType;
 
     fn is_negative(bits: Self::SigType) -> bool {
@@ -193,6 +197,11 @@ trait FloatTraits: traits::Float {
     fn get_exp(bits: Self::SigType) -> i64 {
         (bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
     }
+
+    // Converts a significand to a string, removing trailing zeros. value has up
+    // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
+    // for normals) for f32.
+    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -201,9 +210,16 @@ impl FloatTraits for f32 {
 
     type SigType = u32;
 
+    type SigStrDigitsType = u64;
+
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
+    }
+
+    #[cfg_attr(feature = "no-panic", inline)]
+    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self> {
+        unsafe { to_str_32(buffer, value, extra_digit) }
     }
 }
 
@@ -213,9 +229,24 @@ impl FloatTraits for f64 {
 
     type SigType = u64;
 
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    type SigStrDigitsType = uint16x8_t;
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    type SigStrDigitsType = __m128i;
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    )))]
+    type SigStrDigitsType = [u64; 2];
+
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
+    }
+
+    #[cfg_attr(feature = "no-panic", inline)]
+    unsafe fn to_str(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<Self> {
+        unsafe { to_str_64(buffer, value, extra_digit) }
     }
 }
 
@@ -598,13 +629,6 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
     }
 }
 
-#[cfg_attr(feature = "no-panic", inline)]
-unsafe fn write8(buffer: *mut u8, value: u64) {
-    unsafe {
-        buffer.cast::<u64>().write_unaligned(value);
-    }
-}
-
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[repr(C, align(64))]
 struct SseConstants {
@@ -727,48 +751,14 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
     }
 }
 
-// Writes a significand and removes trailing zeros. value has up to 17 decimal
-// digits (16-17 for normals) for double (num_bits == 64) and up to 9 digits
-// (8-9 for normals) for float. The significant digits start from buffer[1].
-// buffer[0] may contain '0' after this function if the leading digit is zero.
+struct SigStr<Float: FloatTraits> {
+    digits: Float::SigStrDigitsType,
+    num_digits: usize,
+}
+
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn write_significand<Float>(mut buffer: *mut u8, value: u64, extra_digit: bool) -> *mut u8
-where
-    Float: FloatTraits,
-{
-    if Float::NUM_BITS == 32 {
-        buffer = unsafe { write_if(buffer, (value / 100_000_000) as u32, extra_digit) };
-        let bcd = to_bcd8(value % 100_000_000);
-        unsafe {
-            write8(buffer, bcd + ZEROS);
-            return buffer.add(count_trailing_nonzeros(bcd));
-        }
-    }
-
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-    )))]
-    {
-        // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
-        let abbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
-        buffer = unsafe { write_if(buffer, abbccddee / 100_000_000, extra_digit) };
-        let bcd = to_bcd8(u64::from(abbccddee % 100_000_000));
-        unsafe {
-            write8(buffer, bcd + ZEROS);
-        }
-        if ffgghhii == 0 {
-            return unsafe { buffer.add(count_trailing_nonzeros(bcd)) };
-        }
-        let bcd = to_bcd8(u64::from(ffgghhii));
-        unsafe {
-            write8(buffer.add(8), bcd + ZEROS);
-            buffer.add(8).add(count_trailing_nonzeros(bcd))
-        }
-    }
-
+unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<f64> {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // An optimized version for NEON by Dougall Johnson.
@@ -826,7 +816,7 @@ where
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
-        buffer = unsafe { write_if(buffer, a as u32, extra_digit) };
+        *buffer = unsafe { write_if(*buffer, a as u32, extra_digit) };
 
         unsafe {
             let ffgghhii_bbccddee_64: uint64x1_t =
@@ -876,13 +866,13 @@ where
                 vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
             );
 
-            buffer.cast::<uint16x8_t>().write_unaligned(str);
-
             let is_not_zero: uint16x8_t =
                 vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
             let zeros: u64 = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
-
-            buffer.add(16 - (zeros.leading_zeros() as usize >> 2))
+            SigStr {
+                digits: str,
+                num_digits: 16 - (zeros.leading_zeros() as usize >> 2),
+            }
         }
     }
 
@@ -893,7 +883,7 @@ where
         let a = abbccddee / 100_000_000;
         let bbccddee = abbccddee % 100_000_000;
 
-        buffer = unsafe { write_if(buffer, a, extra_digit) };
+        *buffer = unsafe { write_if(*buffer, a, extra_digit) };
 
         let mut c = ptr::addr_of!(SSE_CONSTS);
         // Load constants from memory.
@@ -924,10 +914,45 @@ where
             let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
             let mask = _mm_movemask_epi8(mask128) as u32;
             let len = 32 - mask.leading_zeros() as usize;
-            let digits = _mm_or_si128(bcd, zeros);
-            _mm_storeu_si128(buffer.cast::<__m128i>(), digits);
-            buffer.add(len)
+            SigStr {
+                digits: _mm_or_si128(bcd, zeros),
+                num_digits: len,
+            }
         }
+    }
+
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    )))]
+    {
+        // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
+        let abbccddee = (value / 100_000_000) as u32;
+        let ffgghhii = (value % 100_000_000) as u32;
+        *buffer = unsafe { write_if(*buffer, abbccddee / 100_000_000, extra_digit) };
+        let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
+        if ffgghhii == 0 {
+            return SigStr {
+                digits: [hi + ZEROS, ZEROS],
+                num_digits: count_trailing_nonzeros(hi),
+            };
+        }
+        let lo = to_bcd8(u64::from(ffgghhii));
+        SigStr {
+            digits: [hi + ZEROS, lo + ZEROS],
+            num_digits: 8 + count_trailing_nonzeros(lo),
+        }
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
+unsafe fn to_str_32(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<f32> {
+    *buffer = unsafe { write_if(*buffer, (value / 100_000_000) as u32, extra_digit) };
+    let bcd = to_bcd8(value % 100_000_000);
+    SigStr {
+        digits: bcd + ZEROS,
+        num_digits: count_trailing_nonzeros(bcd),
     }
 }
 
@@ -1151,9 +1176,13 @@ where
     }
 
     // Write significand.
-    let end = unsafe { write_significand::<Float>(buffer.add(1), dec.sig as u64, extra_digit) };
-
-    let length = unsafe { end.offset_from(buffer.add(1)) } as usize;
+    let length = unsafe {
+        let mut end = buffer.add(1);
+        let sig_str = Float::to_str(&mut end, dec.sig as u64, extra_digit);
+        end.cast::<Float::SigStrDigitsType>()
+            .write_unaligned(sig_str.digits);
+        end.offset_from(buffer.add(1)) as usize + sig_str.num_digits
+    };
 
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
         || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
