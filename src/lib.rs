@@ -516,6 +516,38 @@ const NEG10: u32 = (1 << 8) - 10;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_bcd8(abcdefgh: u64) -> u64 {
+    // An optimization from Xiang JunBo.
+    // Three steps BCD. Base 10000 -> base 100 -> base 10.
+    // div and mod are evaluated simultaneously as, e.g.
+    //   (abcdefgh / 10000) << 32 + (abcdefgh % 10000)
+    //      == abcdefgh + (2**32 - 10000) * (abcdefgh / 10000)))
+    // where the division on the RHS is implemented by the usual multiply + shift
+    // trick and the fractional bits are masked away.
+    let abcd_efgh =
+        abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+    let ab_cd_ef_gh = abcd_efgh
+        + u64::from(NEG100) * (((abcd_efgh * u64::from(DIV100_SIG)) >> DIV100_EXP) & 0x7f0000007f);
+    let a_b_c_d_e_f_g_h = ab_cd_ef_gh
+        + u64::from(NEG10)
+            * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
+    a_b_c_d_e_f_g_h.to_be()
+}
+
+unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
+    unsafe {
+        *buffer = b'0' + digit as u8;
+        buffer.add(usize::from(condition))
+    }
+}
+
+unsafe fn write8(buffer: *mut u8, value: u64) {
+    unsafe {
+        buffer.cast::<u64>().write_unaligned(value);
+    }
+}
+
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[repr(C, align(64))]
 struct SseConstants {
@@ -582,38 +614,6 @@ static SSE_CONSTS: SseConstants = SseConstants {
     moddiv10: SseConstants::splat16(10 * (1 << 8) - 1),
     zeros: SseConstants::splat64(ZEROS),
 };
-
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_bcd8(abcdefgh: u64) -> u64 {
-    // An optimization from Xiang JunBo.
-    // Three steps BCD. Base 10000 -> base 100 -> base 10.
-    // div and mod are evaluated simultaneously as, e.g.
-    //   (abcdefgh / 10000) << 32 + (abcdefgh % 10000)
-    //      == abcdefgh + (2**32 - 10000) * (abcdefgh / 10000)))
-    // where the division on the RHS is implemented by the usual multiply + shift
-    // trick and the fractional bits are masked away.
-    let abcd_efgh =
-        abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-    let ab_cd_ef_gh = abcd_efgh
-        + u64::from(NEG100) * (((abcd_efgh * u64::from(DIV100_SIG)) >> DIV100_EXP) & 0x7f0000007f);
-    let a_b_c_d_e_f_g_h = ab_cd_ef_gh
-        + u64::from(NEG10)
-            * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
-    a_b_c_d_e_f_g_h.to_be()
-}
-
-unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
-    unsafe {
-        *buffer = b'0' + digit as u8;
-        buffer.add(usize::from(condition))
-    }
-}
-
-unsafe fn write8(buffer: *mut u8, value: u64) {
-    unsafe {
-        buffer.cast::<u64>().write_unaligned(value);
-    }
-}
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
