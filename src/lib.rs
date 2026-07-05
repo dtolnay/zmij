@@ -759,6 +759,29 @@ struct SigStr<Float: FloatTraits> {
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
 unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigStr<f64> {
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    )))]
+    {
+        // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
+        let abbccddee = (value / 100_000_000) as u32;
+        let ffgghhii = (value % 100_000_000) as u32;
+        *buffer = unsafe { write_if(*buffer, abbccddee / 100_000_000, extra_digit) };
+        let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
+        if ffgghhii == 0 {
+            return SigStr {
+                digits: [hi + ZEROS, ZEROS],
+                num_digits: count_trailing_nonzeros(hi),
+            };
+        }
+        let lo = to_bcd8(u64::from(ffgghhii));
+        SigStr {
+            digits: [hi + ZEROS, lo + ZEROS],
+            num_digits: 8 + count_trailing_nonzeros(lo),
+        }
+    }
+
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // An optimized version for NEON by Dougall Johnson.
@@ -918,29 +941,6 @@ unsafe fn to_str_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> SigS
                 digits: _mm_or_si128(bcd, zeros),
                 num_digits: len,
             }
-        }
-    }
-
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-    )))]
-    {
-        // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
-        let abbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
-        *buffer = unsafe { write_if(*buffer, abbccddee / 100_000_000, extra_digit) };
-        let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
-        if ffgghhii == 0 {
-            return SigStr {
-                digits: [hi + ZEROS, ZEROS],
-                num_digits: count_trailing_nonzeros(hi),
-            };
-        }
-        let lo = to_bcd8(u64::from(ffgghhii));
-        SigStr {
-            digits: [hi + ZEROS, lo + ZEROS],
-            num_digits: 8 + count_trailing_nonzeros(lo),
         }
     }
 }
