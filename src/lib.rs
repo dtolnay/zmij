@@ -99,6 +99,7 @@ use crate::stdarch_x86::{_mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32};
 use crate::stdarch_x86::{
     _mm_shuffle_epi32, _mm_slli_epi16, _mm_slli_epi32, _mm_srli_epi16, _mm_sub_epi16, _MM_SHUFFLE,
 };
+use crate::traits::Float as _;
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
@@ -435,6 +436,55 @@ static EXP_SHIFTS: ExpShiftTable = {
     }
 
     ExpShiftTable { data }
+};
+
+// An optional table of precomputed exponent strings for scientific notation.
+// Each entry packs "e+dd" or "e+ddd" into a u64 with the length in byte 7.
+struct ExpStringTable {
+    data: [u64; if Self::ENABLE {
+        (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
+    } else {
+        0
+    }],
+}
+
+impl ExpStringTable {
+    const ENABLE: bool = cfg!(not(opt_level = "s"));
+    const MIN_DEC_EXP: i32 = f64::MIN_10_EXP - f64::MAX_DIGITS10 as i32;
+    const OFFSET: i32 = -Self::MIN_DEC_EXP;
+}
+
+static EXP_STRINGS: ExpStringTable = {
+    let mut data = [0u64; if ExpStringTable::ENABLE {
+        (f64::MAX_10_EXP - ExpStringTable::MIN_DEC_EXP + 1) as usize
+    } else {
+        0
+    }];
+
+    let mut e = ExpStringTable::MIN_DEC_EXP;
+    while e <= f64::MAX_10_EXP && ExpStringTable::ENABLE {
+        let abs_e = e.unsigned_abs() as u64;
+        let mut val = abs_e % 10 + b'0' as u64;
+        if abs_e >= 10 {
+            val = (val << 8) | (abs_e / 10 % 10 + b'0' as u64);
+        }
+        if abs_e >= 100 {
+            val = (val << 8) | (abs_e / 100 + b'0' as u64);
+        }
+        data[(e + ExpStringTable::OFFSET) as usize] = (if abs_e >= 100 {
+            5
+        } else if abs_e >= 10 {
+            4
+        } else {
+            3
+        } << 48)
+            | (val << 16)
+            | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
+            | b'e' as u64;
+        e += 1;
+    }
+
+    ExpStringTable { data }
 };
 
 // Computes a shift so that, after scaling by a power of 10, the intermediate
@@ -1142,6 +1192,19 @@ where
     buffer = unsafe { buffer.add(length + usize::from(length > 1)) };
 
     // Write exponent.
+    if ExpStringTable::ENABLE {
+        let mut exp_data = unsafe {
+            *EXP_STRINGS
+                .data
+                .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize)
+        };
+        let len = (exp_data >> 48) as usize;
+        exp_data = exp_data.to_le();
+        unsafe {
+            ptr::copy_nonoverlapping(ptr::addr_of!(exp_data).cast::<u8>(), buffer, 5);
+            return buffer.add(len);
+        }
+    }
     let sign_ptr = buffer;
     let e_sign = if dec_exp >= 0 {
         (u16::from(b'+') << 8) | u16::from(b'e')
