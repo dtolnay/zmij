@@ -615,6 +615,8 @@ static SSE_CONSTS: SseConstants = SseConstants {
     zeros: SseConstants::splat64(ZEROS),
 };
 
+// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
+// individual BCD digits in SIMD lane order (caller must shuffle).
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn get_double_significand_bcd_unshuffled_sse(
@@ -652,9 +654,7 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
                 y,
                 _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
             );
-            let big_endian_bcd: __m128i =
-                _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)));
-            big_endian_bcd
+            _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)))
         }
 
         #[cfg(not(target_feature = "sse4.1"))]
@@ -662,11 +662,10 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
             let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
             let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
             let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
-            let unshuffled_bcd: __m128i = _mm_sub_epi16(
+            _mm_sub_epi16(
                 _mm_slli_epi16(z, 8),
                 _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
-            );
-            unshuffled_bcd
+            )
         }
     }
 }
