@@ -201,7 +201,7 @@ trait FloatTraits: traits::Float {
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self>;
+    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -218,7 +218,7 @@ impl FloatTraits for f32 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
+    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
         unsafe { to_digits_32(buffer, value, extra_digit) }
     }
 }
@@ -245,7 +245,7 @@ impl FloatTraits for f64 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
+    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
         unsafe { to_digits_64(buffer, value, extra_digit) }
     }
 }
@@ -502,13 +502,14 @@ static EXP_STRINGS: ExpStringTable = {
         if abs_e >= 100 {
             val = (val << 8) | (abs_e / 100 + b'0' as u64);
         }
-        data[(e + ExpStringTable::OFFSET) as usize] = (if abs_e >= 100 {
+        let len = if abs_e >= 100 {
             5
         } else if abs_e >= 10 {
             4
         } else {
             3
-        } << 48)
+        };
+        data[(e + ExpStringTable::OFFSET) as usize] = (len << 48)
             | (val << 16)
             | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
             | b'e' as u64;
@@ -758,7 +759,7 @@ struct DecDigits<Float: FloatTraits> {
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<f64> {
+unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
@@ -767,7 +768,9 @@ unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> D
         // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        *buffer = unsafe { write_if(*buffer, abbccddee / 100_000_000, extra_digit) };
+        unsafe {
+            write_if(buffer, abbccddee / 100_000_000, extra_digit);
+        }
         let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
         if ffgghhii == 0 {
             return DecDigits {
@@ -839,9 +842,9 @@ unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> D
         let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
         let bbccddee = abbccddee - a * hundred_million;
 
-        *buffer = unsafe { write_if(*buffer, a as u32, extra_digit) };
-
         unsafe {
+            write_if(buffer, a as u32, extra_digit);
+
             let ffgghhii_bbccddee_64: uint64x1_t =
                 mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
             let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
@@ -906,7 +909,9 @@ unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> D
         let a = abbccddee / 100_000_000;
         let bbccddee = abbccddee % 100_000_000;
 
-        *buffer = unsafe { write_if(*buffer, a, extra_digit) };
+        unsafe {
+            write_if(buffer, a, extra_digit);
+        }
 
         let mut c = ptr::addr_of!(SSE_CONSTS);
         // Load constants from memory.
@@ -947,8 +952,10 @@ unsafe fn to_digits_64(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> D
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_digits_32(buffer: &mut *mut u8, value: u64, extra_digit: bool) -> DecDigits<f32> {
-    *buffer = unsafe { write_if(*buffer, (value / 100_000_000) as u32, extra_digit) };
+unsafe fn to_digits_32(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<f32> {
+    unsafe {
+        write_if(buffer, (value / 100_000_000) as u32, extra_digit);
+    }
     let bcd = to_bcd8(value % 100_000_000);
     DecDigits {
         digits: bcd + ZEROS,
@@ -1175,13 +1182,13 @@ where
         dec_exp -= 1;
     }
 
-    // Write significand.
     let length = unsafe {
-        let mut end = buffer.add(1);
-        let dig = Float::to_digits(&mut end, dec.sig as u64, extra_digit);
-        end.cast::<Float::DecDigitsType>()
+        let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit);
+        buffer
+            .add(usize::from(extra_digit) + 1)
+            .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
-        end.offset_from(buffer.add(1)) as usize + dig.num_digits
+        usize::from(extra_digit) + dig.num_digits
     };
 
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
@@ -1221,7 +1228,7 @@ where
     buffer = unsafe { buffer.add(length + usize::from(length > 1)) };
 
     // Write exponent.
-    if ExpStringTable::ENABLE {
+    if ExpStringTable::ENABLE && Float::NUM_BITS == 64 {
         let mut exp_data = unsafe {
             *EXP_STRINGS
                 .data
