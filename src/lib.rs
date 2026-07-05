@@ -275,7 +275,7 @@ struct Pow10SignificandsTable {
 }
 
 impl Pow10SignificandsTable {
-    const COMPRESS: bool = cfg!(small);
+    const COMPRESS: bool = cfg!(opt_level = "s");
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
     const NUM_POW10S: usize = 617;
 
@@ -408,7 +408,7 @@ struct ExpShiftTable {
 }
 
 impl ExpShiftTable {
-    const ENABLE: bool = !cfg!(small);
+    const ENABLE: bool = cfg!(not(opt_level = "s"));
 }
 
 static EXP_SHIFTS: ExpShiftTable = {
