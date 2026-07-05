@@ -101,9 +101,7 @@ use crate::stdarch_x86::{
 };
 use crate::traits::Float as _;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-use core::arch::aarch64::uint16x8_t;
-#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-use core::arch::aarch64::uint8x16_t;
+use core::arch::aarch64::{uint16x8_t, uint8x16_t};
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
