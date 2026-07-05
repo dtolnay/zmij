@@ -102,6 +102,8 @@ use crate::stdarch_x86::{
 use crate::traits::Float as _;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 use core::arch::aarch64::uint16x8_t;
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+use core::arch::aarch64::uint8x16_t;
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 #[cfg(not(zmij_no_select_unpredictable))]
@@ -746,6 +748,117 @@ unsafe fn get_double_significand_bcd_unshuffled_sse(
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
+unsafe fn get_double_unshuffled_digits_neon(
+    buffer: *mut u8,
+    value: u64,
+    extra_digit: bool,
+) -> uint8x16_t {
+    // An optimized version for NEON by Dougall Johnson.
+
+    use core::arch::aarch64::*;
+
+    const NEG10K: i32 = -10000 + 0x10000;
+
+    #[repr(C, align(64))]
+    struct Consts {
+        mul_const: u64,
+        hundred_million: u64,
+        multipliers32: int32x4_t,
+        multipliers16: int16x8_t,
+    }
+
+    static CONSTS: Consts = Consts {
+        mul_const: 0xabcc77118461cefd,
+        hundred_million: 100000000,
+        multipliers32: unsafe {
+            mem::transmute::<[i32; 4], int32x4_t>([
+                DIV10K_SIG as i32,
+                NEG10K,
+                (DIV100_SIG << 12) as i32,
+                NEG100 as i32,
+            ])
+        },
+        multipliers16: unsafe {
+            mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
+        },
+    };
+
+    let mut c = ptr::addr_of!(CONSTS);
+
+    // Compiler barrier, or clang doesn't load from memory and generates 15
+    // more instructions.
+    let c = unsafe {
+        asm!("/*{0}*/", inout(reg) c);
+        &*c
+    };
+
+    let mut hundred_million = c.hundred_million;
+
+    // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
+    unsafe {
+        asm!("/*{0}*/", inout(reg) hundred_million);
+    }
+
+    // Equivalent to abbccddee = value / 100000000, ffgghhii = value % 100000000.
+    let abbccddee = (umul128(value, c.mul_const) >> 90) as u64;
+    let ffgghhii = value - abbccddee * hundred_million;
+
+    // We could probably make this bit faster, but we're preferring to
+    // reuse the constants for now.
+    let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
+    let bbccddee = abbccddee - a * hundred_million;
+
+    unsafe {
+        write_if(buffer, a as u32, extra_digit);
+
+        let ffgghhii_bbccddee_64: uint64x1_t =
+            mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
+        let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
+
+        let bbcc_ffgg: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
+            vreinterpret_u32_s32(vqdmulh_n_s32(
+                bbccddee_ffgghhii,
+                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
+            )),
+            9,
+        ));
+        let ddee_bbcc_hhii_ffgg_32: int32x2_t = vmla_n_s32(
+            bbccddee_ffgghhii,
+            bbcc_ffgg,
+            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
+        );
+
+        let mut ddee_bbcc_hhii_ffgg: int32x4_t =
+            vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
+
+        // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
+        // MUL.
+        asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
+
+        let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
+            ddee_bbcc_hhii_ffgg,
+            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
+        );
+        let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
+            ddee_bbcc_hhii_ffgg,
+            dd_bb_hh_ff,
+            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
+        ));
+        let high_10s: int16x8_t = vqdmulhq_n_s16(
+            ee_dd_cc_bb_ii_hh_gg_ff,
+            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
+        );
+        vreinterpretq_u8_s16(vmlaq_n_s16(
+            ee_dd_cc_bb_ii_hh_gg_ff,
+            high_10s,
+            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
+        ))
+    }
+}
+
 struct DecDigits<Float: FloatTraits> {
     digits: Float::DecDigitsType,
     num_digits: usize,
@@ -781,106 +894,11 @@ unsafe fn to_digits_64(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
-        // An optimized version for NEON by Dougall Johnson.
-
         use core::arch::aarch64::*;
 
-        const NEG10K: i32 = -10000 + 0x10000;
-
-        #[repr(C, align(64))]
-        struct Consts {
-            mul_const: u64,
-            hundred_million: u64,
-            multipliers32: int32x4_t,
-            multipliers16: int16x8_t,
-        }
-
-        static CONSTS: Consts = Consts {
-            mul_const: 0xabcc77118461cefd,
-            hundred_million: 100000000,
-            multipliers32: unsafe {
-                mem::transmute::<[i32; 4], int32x4_t>([
-                    DIV10K_SIG as i32,
-                    NEG10K,
-                    (DIV100_SIG << 12) as i32,
-                    NEG100 as i32,
-                ])
-            },
-            multipliers16: unsafe {
-                mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
-            },
-        };
-
-        let mut c = ptr::addr_of!(CONSTS);
-
-        // Compiler barrier, or clang doesn't load from memory and generates 15
-        // more instructions.
-        let c = unsafe {
-            asm!("/*{0}*/", inout(reg) c);
-            &*c
-        };
-
-        let mut hundred_million = c.hundred_million;
-
-        // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
         unsafe {
-            asm!("/*{0}*/", inout(reg) hundred_million);
-        }
-
-        // Equivalent to abbccddee = value / 100000000, ffgghhii = value % 100000000.
-        let abbccddee = (umul128(value, c.mul_const) >> 90) as u64;
-        let ffgghhii = value - abbccddee * hundred_million;
-
-        // We could probably make this bit faster, but we're preferring to
-        // reuse the constants for now.
-        let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
-        let bbccddee = abbccddee - a * hundred_million;
-
-        unsafe {
-            write_if(buffer, a as u32, extra_digit);
-
-            let ffgghhii_bbccddee_64: uint64x1_t =
-                mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
-            let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
-
-            let bbcc_ffgg: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
-                vreinterpret_u32_s32(vqdmulh_n_s32(
-                    bbccddee_ffgghhii,
-                    mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[0],
-                )),
-                9,
-            ));
-            let ddee_bbcc_hhii_ffgg_32: int32x2_t = vmla_n_s32(
-                bbccddee_ffgghhii,
-                bbcc_ffgg,
-                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
-            );
-
-            let mut ddee_bbcc_hhii_ffgg: int32x4_t =
-                vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
-
-            // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
-            // MUL.
-            asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
-
-            let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
-                ddee_bbcc_hhii_ffgg,
-                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
-            );
-            let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
-                ddee_bbcc_hhii_ffgg,
-                dd_bb_hh_ff,
-                mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
-            ));
-            let high_10s: int16x8_t = vqdmulhq_n_s16(
-                ee_dd_cc_bb_ii_hh_gg_ff,
-                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
-            );
-            let digits: uint8x16_t = vrev64q_u8(vreinterpretq_u8_s16(vmlaq_n_s16(
-                ee_dd_cc_bb_ii_hh_gg_ff,
-                high_10s,
-                mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
-            )));
+            let unshuffled_digits = get_double_unshuffled_digits_neon(buffer, value, extra_digit);
+            let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
                 vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
