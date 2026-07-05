@@ -5,11 +5,12 @@ use num_bigint::BigUint as Uint;
 const _: () = {
     let static_data = mem::size_of_val(&crate::POW10_SIGNIFICANDS)
         + mem::size_of_val(&crate::EXP_SHIFTS)
+        + mem::size_of_val(&crate::EXP_STRINGS)
         + mem::size_of_val(&crate::DIGITS2);
     if cfg!(opt_level = "s") {
         assert!(static_data == 200);
     } else {
-        assert!(static_data == 12168); // 11.9K
+        assert!(static_data == 17232); // 16.8K
     }
 };
 
