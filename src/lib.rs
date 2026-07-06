@@ -1091,7 +1091,7 @@ where
             integral += u64::from(round_up);
 
             // Derive the extra digit from the fractional part (parallel with
-            // rounding). +6 is needed for boundary cases.
+            // rounding). +6 is needed for boundary cases found by verify.py.
             let rem = fractional.wrapping_mul(10);
             let mut digit =
                 (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
