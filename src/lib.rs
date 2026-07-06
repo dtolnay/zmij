@@ -702,7 +702,6 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m12
     #[cfg(not(target_feature = "sse4.1"))]
     let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>()) };
 
-    // The BCD sequences are based on ones provided by Xiang JunBo.
     unsafe {
         let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
         let y: __m128i = _mm_add_epi64(
