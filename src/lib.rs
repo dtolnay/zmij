@@ -1014,84 +1014,69 @@ where
 {
     let bin_exp = raw_exp - i64::from(Float::EXP_OFFSET);
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
-    // An optimization from yy by Yaoyuan Guo:
-    while regular {
-        const LOG10_2_SIG: u64 = 78_913;
-        const LOG10_2_EXP: i32 = 18;
-        #[allow(unused_mut)]
-        let mut dec_exp = if USE_UMUL128_HI64 {
-            umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
-        } else {
-            compute_dec_exp(bin_exp as i32, true)
-        };
-        let even = UInt::from(1) - (bin_sig & UInt::from(1));
-        const HALF: u64 = 1 << 63;
 
-        if num_bits == 64 {
-            // An optimization by Xiang JunBo:
-            // Scale by 10**(-dec_exp-1) to directly produce the shorter
-            // candidate (15-16 digits), deriving the extra digit from the
-            // fractional part. This eliminates div10 from the critical path.
-            const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
-            let shift = if ExpShiftTable::ENABLE {
-                *unsafe {
-                    EXP_SHIFTS
-                        .data
-                        .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
-                }
-            } else {
-                compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
-            };
-            #[cfg(not(miri))]
-            unsafe {
-                // Force 32-bit reg for sxtw addressing.
-                #[cfg(target_arch = "x86_64")]
-                asm!("/*{0:e}*/", inout(reg) dec_exp);
-                #[cfg(target_arch = "aarch64")]
-                asm!("/*{0:w}*/", inout(reg) dec_exp);
-            }
+    const LOG10_2_SIG: u64 = 78_913;
+    const LOG10_2_EXP: i32 = 18;
+    #[allow(unused_mut)]
+    let mut dec_exp = if USE_UMUL128_HI64 {
+        umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
+    } else {
+        compute_dec_exp(bin_exp as i32, true)
+    };
+    let even = UInt::from(1) - (bin_sig & UInt::from(1));
+    const HALF: u64 = 1 << 63;
+    const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
+
+    if num_bits == 64 {
+        // value = 5.0507837461e-27
+        // next  = 5.0507837461000010e-27
+        //
+        // c = integral.fractional' = 5050783746100000.3153987... (value)
+        //                            5050783746100001.0328635... (next)
+        //          scaled_half_ulp =                0.3587324...
+        //
+        // fractional = fractional' * 2**64 = 5818079786399166407
+        //
+        //    5050783746100000.0       c               upper    5050783746100001.0
+        //             s              l|   L             |               S
+        // ──┬────┬────┼────┬────┬────┼*-──┼────┬────┬───*┬────┬────┬────┼-*--┬───
+        //  .8   .9   .0   .1   .2   .3   .4   .5   .6   .7   .8   .9   .0 | .1
+        //           └─────────────────┼─────────────────┘                next
+        //                            1ulp
+        //
+        // s - shorter underestimate, S - shorter overestimate
+        // l - longer underestimate,  L - longer overestimate
+
+        if !regular {
+            let dec_exp = compute_dec_exp(bin_exp as i32, false);
+            let shift =
+                compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
             let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
             let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
             let mut integral = p.hi >> EXTRA_SHIFT;
             let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
+            let scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
+            let down_half_ulp = scaled_half_ulp >> 1;
 
-            // value = 5.0507837461e-27
-            // next  = 5.0507837461000010e-27
-            //
-            // c = integral.fractional' = 5050783746100000.3153987... (value)
-            //                            5050783746100001.0328635... (next)
-            //          scaled_half_ulp =                0.3587324...
-            //
-            // fractional = fractional' * 2**64 = 5818079786399166407
-            //
-            //    5050783746100000.0       c               upper    5050783746100001.0
-            //             s              l|   L             |               S
-            // ──┬────┬────┼────┬────┬────┼*-──┼────┬────┬───*┬────┬────┬────┼-*--┬───
-            //  .8   .9   .0   .1   .2   .3   .4   .5   .6   .7   .8   .9   .0 | .1
-            //           └─────────────────┼─────────────────┘                next
-            //                            1ulp
-            //
-            // s - shorter underestimate, S - shorter overestimate
-            // l - longer underestimate,  L - longer overestimate
-
-            let mut scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
-            if fractional == scaled_half_ulp {
-                break;
-            }
-
-            scaled_half_ulp += even.into();
-            let round_up = fractional.wrapping_add(scaled_half_ulp) < fractional;
-            let round_down = scaled_half_ulp > fractional;
+            let round_up = scaled_half_ulp > u64::MAX - fractional;
+            let round_down = down_half_ulp > fractional;
             integral += u64::from(round_up);
 
-            // Derive the extra digit from the fractional part (parallel with
-            // rounding). +6 is needed for boundary cases found by verify.py.
             let rem = fractional.wrapping_mul(10);
-            let mut digit =
-                (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
-            if fractional == (1u64 << 62) {
-                digit = 2;
+            let mut digit = umul128_hi64(fractional, 10) as i32;
+            // Lower midpoint of the asymmetric interval in digit space.
+            let lo_frac = fractional.wrapping_sub(down_half_ulp);
+            let lo_rem = lo_frac.wrapping_mul(10);
+            let lo = (umul128_hi64(lo_frac, 10) + u64::from(lo_rem != 0)) as i32;
+            // +6 bias for pow10 truncation, or round-to-even on exact tie.
+            digit += if rem == HALF {
+                digit & 1
+            } else {
+                i32::from(rem.wrapping_add(HALF + 6) < rem)
+            };
+            if digit < lo {
+                digit = lo;
             }
             return ToDecimalResult {
                 sig: integral as i64,
@@ -1104,6 +1089,60 @@ where
             };
         }
 
+        // An optimization by Xiang JunBo:
+        // Scale by 10**(-dec_exp-1) to directly produce the shorter candidate
+        // (15-16 digits), deriving the extra digit from the fractional part.
+        // This eliminates div10 from the critical path.
+        let shift = if ExpShiftTable::ENABLE {
+            *unsafe {
+                EXP_SHIFTS
+                    .data
+                    .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
+            }
+        } else {
+            compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
+        };
+        #[cfg(not(miri))]
+        unsafe {
+            // Force 32-bit reg for sxtw addressing.
+            #[cfg(target_arch = "x86_64")]
+            asm!("/*{0:e}*/", inout(reg) dec_exp);
+            #[cfg(target_arch = "aarch64")]
+            asm!("/*{0:w}*/", inout(reg) dec_exp);
+        }
+        let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
+        let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
+
+        let mut integral = p.hi >> EXTRA_SHIFT;
+        let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
+
+        let mut scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
+
+        scaled_half_ulp += even.into();
+        let round_up = fractional.wrapping_add(scaled_half_ulp) < fractional;
+        let round_down = scaled_half_ulp > fractional;
+        integral += u64::from(round_up);
+
+        // Derive the extra digit from the fractional part (parallel with
+        // rounding). +6 is needed for boundary cases found by verify.py.
+        let rem = fractional.wrapping_mul(10);
+        let mut digit =
+            (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
+        if fractional == (1u64 << 62) {
+            digit = 2;
+        }
+        return ToDecimalResult {
+            sig: integral as i64,
+            exp: dec_exp,
+            last_digit: if round_up || round_down {
+                0
+            } else {
+                digit as u8
+            },
+        };
+    }
+
+    while regular {
         // Float path: original 10**(-dec_exp) scaling with mod-10 rounding.
         let exp_shift = compute_exp_shift(bin_exp as i32, dec_exp);
         let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
