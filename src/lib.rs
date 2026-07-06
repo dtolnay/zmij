@@ -1151,12 +1151,6 @@ where
         let integral = UInt::truncate((p >> 64) as u64);
         let fractional = p as u64;
 
-        // Exact half-ulp tie when rounding to nearest integer.
-        let cmp = fractional.wrapping_sub(HALF) as i64;
-        if cmp == 0 {
-            break;
-        }
-
         // An optimization of integral % 10 by Dougall Johnson.
         let div10 = div10(integral.into());
         #[allow(unused_mut)]
@@ -1193,7 +1187,11 @@ where
         let round_down = scaled_sig_mod10 < half_ulp + even.into();
         let round_up = ten < upper;
         let round = i32::from(round_down) + i32::from(round_up);
-        let d = digit as u8 + u8::from(cmp >= 0);
+        let cmp = fractional.wrapping_sub(HALF) as i64;
+        let mut d = digit as u8 + u8::from(cmp > 0);
+        if cmp == 0 {
+            d += (integral & UInt::from(1)).into() as u8;
+        }
         let dec_sig = div10 as i64 + i64::from(round_up);
         return ToDecimalResult {
             sig: dec_sig * 10 + if round != 0 { 0 } else { i64::from(d) },
