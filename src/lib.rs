@@ -1013,6 +1013,15 @@ where
     }
 }
 
+// Returns x / 10 for x <= 2**62.
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn div10(x: u64) -> u64 {
+    debug_assert!(x < (1 << 62));
+    // ceil(2**64 / 10) computed as (1 << 63) / 5 + 1 to avoid int128.
+    const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
+    umul128_hi64(x, DIV10_SIG64)
+}
+
 // Here be 🐉s.
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
 // representation, where bin_exp = raw_exp - exp_offset.
@@ -1056,11 +1065,8 @@ where
             break;
         }
 
-        // An optimization of integral % 10 by Dougall Johnson. Relies on range
-        // calculation: (max_bin_sig << max_exp_shift) * max_u128.
-        // (1 << 63) / 5 == (1 << 64) / 10 without an intermediate int128.
-        const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
-        let div10 = umul128_hi64(integral.into(), DIV10_SIG64);
+        // An optimization of integral % 10 by Dougall Johnson.
+        let div10 = div10(integral.into());
         #[allow(unused_mut)]
         let mut digit = integral.into() - div10 * 10;
         // or it narrows to 32-bit and doesn't use madd/msub
@@ -1132,16 +1138,15 @@ where
         }
     }
     // Fallback to Schubfach to guarantee correctness in boundary cases.
-    let r = to_decimal_schubfach(bin_sig, bin_exp, regular);
+    let result = to_decimal_schubfach(bin_sig, bin_exp, regular);
     if Float::NUM_BITS != 64 {
-        return r;
+        return result;
     }
-    let div10_sig64 = (1u64 << 63) / 5 + 1;
-    let top = umul128_hi64(r.sig as u64, div10_sig64) as i64;
+    let div10 = div10(result.sig as u64);
     ToDecimalResult {
-        sig: top,
-        exp: r.exp,
-        last_digit: (r.sig - top * 10) as u8,
+        sig: div10 as i64,
+        exp: result.exp,
+        last_digit: (result.sig - div10 as i64 * 10) as u8,
     }
 }
 
@@ -1183,8 +1188,9 @@ where
             dec.exp -= 1;
         }
         if Float::SPLIT_LAST_DIGIT {
-            dec.last_digit = (dec.sig % 10) as u8;
-            dec.sig /= 10;
+            let div10 = div10(dec.sig as u64);
+            dec.last_digit = (dec.sig - div10 as i64 * 10) as u8;
+            dec.sig = div10 as i64;
         }
     } else {
         dec = to_decimal_fast::<Float, Float::SigType>(
