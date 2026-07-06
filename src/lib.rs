@@ -1202,16 +1202,7 @@ where
         };
     }
     // Fallback to Schubfach to guarantee correctness in boundary cases.
-    let result = to_decimal_schubfach(bin_sig, bin_exp, regular);
-    if Float::NUM_BITS != 64 {
-        return result;
-    }
-    let div10 = div10(result.sig as u64);
-    ToDecimalResult {
-        sig: div10 as i64,
-        exp: result.exp,
-        last_digit: (result.sig - div10 as i64 * 10) as u8,
-    }
+    to_decimal_schubfach(bin_sig, bin_exp, regular)
 }
 
 /// Writes the shortest correctly rounded decimal representation of `value` to
