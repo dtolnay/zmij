@@ -312,10 +312,10 @@ const POW10_MAJOR: [uint128; 23] = [
 
 #[rustfmt::skip]
 const POW10_FIXUPS: [u32; 20] = [
-    0x05271b1f, 0x00000c20, 0x00003200, 0x12100020, 0x00000000,
-    0x06000000, 0xc16409c0, 0xaf26700f, 0xeb987b07, 0x0000000d,
-    0x00000000, 0x66fbfffe, 0xb74100ec, 0xa0669fe8, 0xedb21280,
-    0x00000686, 0x0a021200, 0x29b89c20, 0x08bc0eda, 0x00000000,
+    0x0a4e363f, 0x00001840, 0x00006400, 0x24200040, 0x00000000,
+    0x0c000000, 0x82c81380, 0x5e4ce01f, 0xd730f60f, 0x0000001b,
+    0x00000000, 0xcdf7fffc, 0x6e8201d8, 0x40cd3fd1, 0xdb642501,
+    0x00000d0d, 0x14042400, 0x53713840, 0x11781db4, 0x00000000,
 ];
 
 // 128-bit significands of powers of 10 rounded down.
@@ -331,14 +331,14 @@ struct Pow10SignificandTable {
 impl Pow10SignificandTable {
     const COMPRESS: bool = cfg!(opt_level = "s");
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
-    const NUM_POW10S: usize = 617;
+    const NUM_POW10S: usize = 618;
 
     // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
     #[cfg_attr(feature = "no-panic", inline)]
     const fn compute(i: u32) -> uint128 {
         const STRIDE: u32 = POW10_MINOR.len() as u32;
-        let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 11) % STRIDE) as usize) };
-        let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 11) / STRIDE) as usize) };
+        let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 10) % STRIDE) as usize) };
+        let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 10) / STRIDE) as usize) };
 
         let h1 = umul128_hi64(h.lo, m);
 
@@ -384,7 +384,7 @@ impl Pow10SignificandTable {
 
     #[cfg_attr(feature = "no-panic", inline)]
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
+        const DEC_EXP_MIN: i32 = -293;
         let i = dec_exp - DEC_EXP_MIN;
         if Self::COMPRESS {
             return Self::compute(i as u32);
@@ -431,8 +431,18 @@ impl Pow10SignificandTable {
 
 static POW10_SIGNIFICANDS: Pow10SignificandTable = Pow10SignificandTable::new();
 
+// Computes a shift so that, after scaling by a power of 10, the intermediate
+// result always has a fixed 128-bit fractional part (for double).
+//
+// Different binary exponents can map to the same decimal exponent, but place
+// the decimal point at different bit positions. The shift compensates for this.
+//
+// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
+// 10^dec_exp puts the decimal point in different bit positions:
+//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
+//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
 #[inline]
-const fn do_compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
+const fn compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
     debug_assert!(dec_exp >= -350 && dec_exp <= 350);
     // log2_pow10_sig = round(log2(10) * 2**log2_pow10_exp) + 1
     const LOG2_POW10_SIG: i32 = 217_707;
@@ -453,6 +463,7 @@ struct ExpShiftTable {
 
 impl ExpShiftTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
+    const NUM_FRACTIONAL_BITS: usize = 6;
 }
 
 static EXP_SHIFTS: ExpShiftTable = {
@@ -469,7 +480,8 @@ static EXP_SHIFTS: ExpShiftTable = {
             bin_exp += 1;
         }
         let dec_exp = compute_dec_exp(bin_exp, true);
-        data[raw_exp] = do_compute_exp_shift(bin_exp, dec_exp);
+        data[raw_exp] = compute_exp_shift(bin_exp, dec_exp + 1)
+            .wrapping_add(ExpShiftTable::NUM_FRACTIONAL_BITS as u8);
         raw_exp += 1;
     }
 
@@ -519,34 +531,6 @@ static EXP_STRINGS: ExpStringTable = {
 
     ExpStringTable { data }
 };
-
-// Computes a shift so that, after scaling by a power of 10, the intermediate
-// result always has a fixed 128-bit fractional part (for double).
-//
-// Different binary exponents can map to the same decimal exponent, but place
-// the decimal point at different bit positions. The shift compensates for this.
-//
-// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
-// 10^dec_exp puts the decimal point in different bit positions:
-//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
-//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
-#[inline]
-unsafe fn compute_exp_shift<UInt, const ONLY_REGULAR: bool>(bin_exp: i32, dec_exp: i32) -> u8
-where
-    UInt: traits::UInt,
-{
-    let num_bits = mem::size_of::<UInt>() * 8;
-    if num_bits == 64 && ExpShiftTable::ENABLE && ONLY_REGULAR {
-        unsafe {
-            *EXP_SHIFTS
-                .data
-                .as_ptr()
-                .add((bin_exp + f64::EXP_OFFSET) as usize)
-        }
-    } else {
-        do_compute_exp_shift(bin_exp, dec_exp)
-    }
-}
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn count_trailing_nonzeros(x: u64) -> usize {
@@ -968,7 +952,7 @@ where
 {
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     let dec_exp = compute_dec_exp(bin_exp as i32, regular);
-    let exp_shift = unsafe { compute_exp_shift::<UInt, false>(bin_exp as i32, dec_exp) };
+    let exp_shift = compute_exp_shift(bin_exp as i32, dec_exp);
     let mut pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
 
     // Shubfach requires strict overestimates of powers of 10.
@@ -1038,25 +1022,82 @@ where
     while regular {
         const LOG10_2_SIG: u64 = 78_913;
         const LOG10_2_EXP: i32 = 18;
-        let dec_exp = if USE_UMUL128_HI64 {
+        #[allow(unused_mut)]
+        let mut dec_exp = if USE_UMUL128_HI64 {
             umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
         } else {
             compute_dec_exp(bin_exp as i32, true)
         };
-        let exp_shift = unsafe { compute_exp_shift::<UInt, true>(bin_exp as i32, dec_exp) };
+        let even = UInt::from(1) - (bin_sig & UInt::from(1));
+
+        if num_bits == 64 {
+            // Scale by 10**(-dec_exp-1) to directly produce the shorter
+            // candidate (15-16 digits), deriving the extra digit from the
+            // fractional part. This eliminates div10 from the critical path.
+            const NUM_FRACTIONAL_BITS: usize = ExpShiftTable::NUM_FRACTIONAL_BITS;
+            let shift = if ExpShiftTable::ENABLE {
+                *unsafe {
+                    EXP_SHIFTS
+                        .data
+                        .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
+                }
+            } else {
+                compute_exp_shift(bin_exp as i32, dec_exp + 1)
+                    .wrapping_add(NUM_FRACTIONAL_BITS as u8)
+            };
+            #[cfg(not(miri))]
+            unsafe {
+                // Force 32-bit reg for sxtw addressing.
+                #[cfg(target_arch = "x86_64")]
+                asm!("/*{0:e}*/", inout(reg) dec_exp);
+                #[cfg(target_arch = "aarch64")]
+                asm!("/*{0:w}*/", inout(reg) dec_exp);
+            }
+            let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
+            let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
+
+            let mut integral = p.hi >> NUM_FRACTIONAL_BITS;
+            let fractional = (p.hi << (64 - NUM_FRACTIONAL_BITS)) | (p.lo >> NUM_FRACTIONAL_BITS);
+
+            // Close to half-ulp tie when rounding to nearest integer.
+            let mut scaled_half_ulp = pow10.hi >> (NUM_FRACTIONAL_BITS + 1 - shift as usize);
+            if fractional == scaled_half_ulp {
+                break;
+            }
+
+            scaled_half_ulp += even.into();
+            let round_up = fractional.wrapping_add(scaled_half_ulp) < fractional;
+            let round_down = scaled_half_ulp > fractional;
+            integral += u64::from(round_up);
+
+            // Derive the extra digit from the fractional part (parallel with
+            // rounding). The bias (2**63 + 6) rounds to nearest per xjb paper.
+            const ROUNDING_BIAS: u64 = (1 << 63) + 6;
+            let digit_frac = fractional.wrapping_mul(10);
+            let mut digit = (umul128_hi64(fractional, 10)
+                + u64::from(digit_frac.wrapping_add(ROUNDING_BIAS) < digit_frac))
+                as i32;
+            if fractional == (1u64 << 62) {
+                digit = 2;
+            }
+            return ToDecimalResult {
+                sig: integral as i64,
+                exp: dec_exp,
+                last_digit: if round_up || round_down {
+                    0
+                } else {
+                    digit as u8
+                },
+            };
+        }
+
+        // Float path: original 10**(-dec_exp) scaling with mod-10 rounding.
+        let exp_shift = compute_exp_shift(bin_exp as i32, dec_exp);
         let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
 
-        let integral; // integral part of bin_sig * pow10
-        let fractional; // fractional part of bin_sig * pow10
-        if num_bits == 64 {
-            let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << exp_shift).into());
-            integral = UInt::truncate(p.hi);
-            fractional = p.lo;
-        } else {
-            let p = umul128(pow10.hi, (bin_sig << exp_shift).into());
-            integral = UInt::truncate((p >> 64) as u64);
-            fractional = p as u64;
-        }
+        let p = umul128(pow10.hi, (bin_sig << exp_shift).into());
+        let integral = UInt::truncate((p >> 64) as u64);
+        let fractional = p as u64;
         const HALF_ULP: u64 = 1 << 63;
 
         // Exact half-ulp tie when rounding to nearest integer.
@@ -1078,7 +1119,7 @@ where
         // Switch to a fixed-point representation with the least significant
         // integral digit in the upper bits and fractional digits in the lower
         // bits.
-        let num_integral_bits = if num_bits == 64 { 4 } else { 32 };
+        let num_integral_bits = 32;
         let num_fractional_bits = 64 - num_integral_bits;
         let ten = 10u64 << num_fractional_bits;
         // Fixed-point remainder of the scaled significand modulo 10.
@@ -1117,25 +1158,16 @@ where
             break;
         }
 
-        let even = 1 - (bin_sig.into() & 1);
-        let round_down = scaled_sig_mod10 < scaled_half_ulp + even;
+        let round_down = scaled_sig_mod10 < scaled_half_ulp + even.into();
         let round_up = ten < upper;
         let round = i32::from(round_down) + i32::from(round_up);
         let d = digit as u8 + u8::from(cmp >= 0);
         let dec_sig = div10 as i64 + i64::from(round_up);
-        if Float::NUM_BITS == 64 {
-            return ToDecimalResult {
-                sig: dec_sig,
-                exp: dec_exp,
-                last_digit: if round != 0 { 0 } else { d },
-            };
-        } else {
-            return ToDecimalResult {
-                sig: dec_sig * 10 + if round != 0 { 0 } else { i64::from(d) },
-                exp: dec_exp,
-                last_digit: 0,
-            };
-        }
+        return ToDecimalResult {
+            sig: dec_sig * 10 + if round != 0 { 0 } else { i64::from(d) },
+            exp: dec_exp,
+            last_digit: 0,
+        };
     }
     // Fallback to Schubfach to guarantee correctness in boundary cases.
     let result = to_decimal_schubfach(bin_sig, bin_exp, regular);
