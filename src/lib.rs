@@ -463,6 +463,8 @@ struct ExpShiftTable {
 
 impl ExpShiftTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
+    // num_fractional_bits must be >= 3 to keep shift non-negative and <= 11 to
+    // fit the significand into 64 bits after the shift.
     const NUM_FRACTIONAL_BITS: usize = 6;
 }
 
