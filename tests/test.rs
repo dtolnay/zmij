@@ -26,6 +26,7 @@ mod dtoa_test {
         assert_eq!(dtoa(1.2e-322), "1.2e-322");
         assert_eq!(dtoa(1.24e-322), "1.24e-322");
         assert_eq!(dtoa(1.234e-320), "1.234e-320");
+        assert_eq!(dtoa(2.2250738585072004e-308), "2.2250738585072004e-308");
     }
 
     #[test]

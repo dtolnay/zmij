@@ -1183,7 +1183,8 @@ where
             dec.exp -= 1;
         }
         if Float::SPLIT_LAST_DIGIT {
-            dec.exp -= 1;
+            dec.last_digit = (dec.sig % 10) as u8;
+            dec.sig /= 10;
         }
     } else {
         dec = to_decimal_fast::<Float, Float::SigType>(

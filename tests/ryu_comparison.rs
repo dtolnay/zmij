@@ -19,9 +19,6 @@ fn ryu_comparison() {
     for _ in 0..N {
         let bits = rng.next_u64();
         let float = f64::from_bits(bits);
-        if float.is_subnormal() {
-            continue; // FIXME
-        }
         let ryu = ryu_buffer.format(float);
         let zmij = zmij_buffer.format(float);
         let matches = if ryu.contains('e') && !ryu.contains("e-") {
