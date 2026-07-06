@@ -89,9 +89,9 @@ mod dtoa_test {
     }
 
     #[test]
-    fn null_terminated() {
-        assert_eq!(dtoa(9.061488e15), "9061488000000000.0");
-        assert_eq!(dtoa(f64::NAN.copysign(1.0)), "NaN");
+    fn boundary_cases() {
+        assert_eq!(dtoa(1.3076622631878654e+65), "1.3076622631878654e+65");
+        assert_eq!(dtoa(1.3588129002659584e-245), "1.3588129002659584e-245");
     }
 
     #[test]
