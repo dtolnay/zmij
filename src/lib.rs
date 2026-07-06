@@ -1035,9 +1035,9 @@ where
 
         let mut integral = p.hi >> EXTRA_SHIFT;
         let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
+
         let half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
         let down_half_ulp = half_ulp >> 1;
-
         let round_up = half_ulp > u64::MAX - fractional;
         let round_down = down_half_ulp > fractional;
         integral += u64::from(round_up);
@@ -1048,29 +1048,26 @@ where
         let lo_frac = fractional.wrapping_sub(down_half_ulp);
         let lo_rem = lo_frac.wrapping_mul(10);
         let lo = (umul128_hi64(lo_frac, 10) + u64::from(lo_rem != 0)) as i32;
-        // +6 bias for pow10 truncation, or round-to-even on exact tie.
         digit += if rem == HALF {
             digit & 1
         } else {
-            i32::from(rem.wrapping_add(HALF + 6) < rem)
+            i32::from(rem.wrapping_add(HALF) < rem)
         };
         if digit < lo {
             digit = lo;
         }
-        let d = if round_up || round_down {
-            0
-        } else {
-            digit as u8
-        };
+        if round_up || round_down {
+            digit = 0;
+        }
         if num_bits == 64 {
             return ToDecimalResult {
                 sig: integral as i64,
                 exp: dec_exp,
-                last_digit: d,
+                last_digit: digit as u8,
             };
         }
         return ToDecimalResult {
-            sig: integral as i64 * 10 + i64::from(d),
+            sig: integral as i64 * 10 + i64::from(digit),
             exp: dec_exp,
             last_digit: 0,
         };
@@ -1080,10 +1077,10 @@ where
         const EXTRA_SHIFT: usize = 34;
         let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
         let pow10_hi = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) }.hi;
-        let sig_hi = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
+        let p = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
 
-        let mut integral = sig_hi >> EXTRA_SHIFT;
-        let fractional = sig_hi & ((1u64 << EXTRA_SHIFT) - 1);
+        let mut integral = p >> EXTRA_SHIFT;
+        let fractional = p & ((1u64 << EXTRA_SHIFT) - 1);
 
         let half_ulp = (pow10_hi >> (65 - shift as usize)) + even.into();
         let round_up = ((fractional + half_ulp) >> EXTRA_SHIFT) != 0;
@@ -1097,13 +1094,11 @@ where
             rem > (1u64 << (EXTRA_SHIFT - 1))
                 || (rem == (1u64 << (EXTRA_SHIFT - 1)) && (digit & 1) != 0),
         );
+        if round_up || round_down {
+            digit = 0;
+        }
         return ToDecimalResult {
-            sig: (integral * 10
-                + if round_up || round_down {
-                    0
-                } else {
-                    digit as u64
-                }) as i64,
+            sig: integral as i64 * 10 + i64::from(digit),
             exp: dec_exp,
             last_digit: 0,
         };
@@ -1155,11 +1150,10 @@ where
     let mut integral = p.hi >> EXTRA_SHIFT;
     let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
-    let mut half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
-    half_ulp += even.into();
+    let half_ulp = (pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize)) + even.into();
     let round_up = fractional.wrapping_add(half_ulp) < fractional;
     let round_down = half_ulp > fractional;
-    integral += u64::from(round_up);
+    integral += u64::from(round_up); // Compute integral before digit.
 
     // Derive the extra digit from the fractional part (parallel with rounding).
     // +6 is needed for boundary cases found by verify.py.
@@ -1167,7 +1161,7 @@ where
     let mut digit =
         (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
     if fractional == (1u64 << 62) {
-        digit = 2;
+        digit = 2; // Round 2.5 to 2.
     }
     ToDecimalResult {
         sig: integral as i64,
