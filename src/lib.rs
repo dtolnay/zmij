@@ -1034,6 +1034,7 @@ where
         const HALF: u64 = 1 << 63;
 
         if num_bits == 64 {
+            // An optimization by Xiang JunBo:
             // Scale by 10**(-dec_exp-1) to directly produce the shorter
             // candidate (15-16 digits), deriving the extra digit from the
             // fractional part. This eliminates div10 from the critical path.
