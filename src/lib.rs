@@ -688,13 +688,7 @@ static SSE_CONSTS: SseConstants = SseConstants {
 // individual BCD digits in SIMD lane order (caller must shuffle).
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_unshuffled_digits(
-    #[allow(unused_variables)] value: u64,
-    #[allow(unused_variables)] extra_digit: bool,
-    bbccddee: u32,
-    ffgghhii: u32,
-    c: &SseConstants,
-) -> __m128i {
+fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m128i {
     let div10k = unsafe { _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>()) };
     let neg10k = unsafe { _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>()) };
     let div100 = unsafe { _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>()) };
@@ -905,7 +899,7 @@ unsafe fn to_digits_64(
         let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
 
         unsafe {
-            let unshuffled_bcd = to_unshuffled_digits(value, extra_digit, abbccddee, ffgghhii, &*c);
+            let unshuffled_bcd = to_unshuffled_digits(abbccddee, ffgghhii, &*c);
             #[cfg(target_feature = "sse4.1")]
             let bcd = {
                 let bswap = _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>());

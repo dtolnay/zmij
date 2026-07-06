@@ -101,6 +101,13 @@ mod dtoa_test {
     }
 
     #[test]
+    fn fixed_with_zeros() {
+        assert_eq!(dtoa(43210.0), "43210.0");
+        assert_eq!(dtoa(43210.1), "43210.1");
+        assert_eq!(dtoa(10000.0), "10000.0");
+    }
+
+    #[test]
     fn no_buffer() {
         assert_eq!(dtoa(6.62607015e-34), "6.62607015e-34");
     }
