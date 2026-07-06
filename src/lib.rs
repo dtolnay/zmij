@@ -1033,7 +1033,7 @@ where
         //
         // c = integral.fractional' = 5050783746100000.3153987... (value)
         //                            5050783746100001.0328635... (next)
-        //          scaled_half_ulp =                0.3587324...
+        //                 half_ulp =                0.3587324...
         //
         // fractional = fractional' * 2**64 = 5818079786399166407
         //
@@ -1056,10 +1056,10 @@ where
 
             let mut integral = p.hi >> EXTRA_SHIFT;
             let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
-            let scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
-            let down_half_ulp = scaled_half_ulp >> 1;
+            let half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
+            let down_half_ulp = half_ulp >> 1;
 
-            let round_up = scaled_half_ulp > u64::MAX - fractional;
+            let round_up = half_ulp > u64::MAX - fractional;
             let round_down = down_half_ulp > fractional;
             integral += u64::from(round_up);
 
@@ -1116,11 +1116,11 @@ where
         let mut integral = p.hi >> EXTRA_SHIFT;
         let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
-        let mut scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
+        let mut half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
 
-        scaled_half_ulp += even.into();
-        let round_up = fractional.wrapping_add(scaled_half_ulp) < fractional;
-        let round_down = scaled_half_ulp > fractional;
+        half_ulp += even.into();
+        let round_up = fractional.wrapping_add(half_ulp) < fractional;
+        let round_down = half_ulp > fractional;
         integral += u64::from(round_up);
 
         // Derive the extra digit from the fractional part (parallel with
@@ -1176,12 +1176,12 @@ where
         // Fixed-point remainder of the scaled significand modulo 10.
         let scaled_sig_mod10 = (digit << num_fractional_bits) | (fractional >> num_integral_bits);
 
-        // scaled_half_ulp = 0.5 * pow10 in the fixed-point format.
+        // half_ulp = 0.5 * pow10 in the fixed-point format.
         // dec_exp is chosen so that 10**dec_exp <= 2**bin_exp < 10**(dec_exp + 1).
         // Since 1ulp == 2**bin_exp it will be in the range [1, 10) after scaling
         // by 10**dec_exp. Add 1 to combine the shift with division by two.
-        let scaled_half_ulp = pow10.hi >> (num_integral_bits - exp_shift + 1);
-        let upper = scaled_sig_mod10 + scaled_half_ulp;
+        let half_ulp = pow10.hi >> (num_integral_bits - exp_shift + 1);
+        let upper = scaled_sig_mod10 + half_ulp;
 
         // Check for near-boundary case when rounding up to nearest 10;
         // equivalent to upper == ten || upper == ten - 1.
@@ -1190,7 +1190,7 @@ where
             break;
         }
 
-        let round_down = scaled_sig_mod10 < scaled_half_ulp + even.into();
+        let round_down = scaled_sig_mod10 < half_ulp + even.into();
         let round_up = ten < upper;
         let round = i32::from(round_down) + i32::from(round_up);
         let d = digit as u8 + u8::from(cmp >= 0);
