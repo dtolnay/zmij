@@ -463,9 +463,9 @@ struct ExpShiftTable {
 
 impl ExpShiftTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
-    // num_fractional_bits must be >= 3 to keep shift non-negative and <= 11 to
-    // fit the significand into 64 bits after the shift.
-    const NUM_FRACTIONAL_BITS: usize = 6;
+    // extra_shift must be >= 3 to keep shift non-negative and <= 11 to fit the
+    // significand into 64 bits after the shift.
+    const EXTRA_SHIFT: usize = 6;
 }
 
 static EXP_SHIFTS: ExpShiftTable = {
@@ -482,8 +482,8 @@ static EXP_SHIFTS: ExpShiftTable = {
             bin_exp += 1;
         }
         let dec_exp = compute_dec_exp(bin_exp, true);
-        data[raw_exp] = compute_exp_shift(bin_exp, dec_exp + 1)
-            .wrapping_add(ExpShiftTable::NUM_FRACTIONAL_BITS as u8);
+        data[raw_exp] =
+            compute_exp_shift(bin_exp, dec_exp + 1).wrapping_add(ExpShiftTable::EXTRA_SHIFT as u8);
         raw_exp += 1;
     }
 
@@ -1036,7 +1036,7 @@ where
             // Scale by 10**(-dec_exp-1) to directly produce the shorter
             // candidate (15-16 digits), deriving the extra digit from the
             // fractional part. This eliminates div10 from the critical path.
-            const NUM_FRACTIONAL_BITS: usize = ExpShiftTable::NUM_FRACTIONAL_BITS;
+            const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
             let shift = if ExpShiftTable::ENABLE {
                 *unsafe {
                     EXP_SHIFTS
@@ -1044,8 +1044,7 @@ where
                         .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
                 }
             } else {
-                compute_exp_shift(bin_exp as i32, dec_exp + 1)
-                    .wrapping_add(NUM_FRACTIONAL_BITS as u8)
+                compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
             };
             #[cfg(not(miri))]
             unsafe {
@@ -1058,8 +1057,8 @@ where
             let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
             let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
-            let mut integral = p.hi >> NUM_FRACTIONAL_BITS;
-            let fractional = (p.hi << (64 - NUM_FRACTIONAL_BITS)) | (p.lo >> NUM_FRACTIONAL_BITS);
+            let mut integral = p.hi >> EXTRA_SHIFT;
+            let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
             // value = 5.0507837461e-27
             // next  = 5.0507837461000010e-27
@@ -1081,7 +1080,7 @@ where
             // l - longer underestimate,  L - longer overestimate
 
             // Close to half-ulp tie when rounding to nearest integer.
-            let mut scaled_half_ulp = pow10.hi >> (NUM_FRACTIONAL_BITS + 1 - shift as usize);
+            let mut scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
             if fractional == scaled_half_ulp {
                 break;
             }
