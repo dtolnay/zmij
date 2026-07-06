@@ -1080,7 +1080,6 @@ where
             // s - shorter underestimate, S - shorter overestimate
             // l - longer underestimate,  L - longer overestimate
 
-            // Close to half-ulp tie when rounding to nearest integer.
             let mut scaled_half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
             if fractional == scaled_half_ulp {
                 break;
