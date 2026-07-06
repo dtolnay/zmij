@@ -1093,10 +1093,9 @@ where
 
             // Derive the extra digit from the fractional part (parallel with
             // rounding). +6 is needed for boundary cases.
-            let digit_frac = fractional.wrapping_mul(10);
-            let mut digit = (umul128_hi64(fractional, 10)
-                + u64::from(digit_frac.wrapping_add(HALF + 6) < digit_frac))
-                as i32;
+            let rem = fractional.wrapping_mul(10);
+            let mut digit =
+                (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
             if fractional == (1u64 << 62) {
                 digit = 2;
             }
