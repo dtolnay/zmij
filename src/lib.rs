@@ -125,12 +125,6 @@ const NAN: &str = "NaN";
 const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 
-// Returns true_value if lhs < rhs, else false_value, without branching.
-#[inline]
-fn select_if_less(lhs: u64, rhs: u64, true_value: i64, false_value: i64) -> i64 {
-    hint::select_unpredictable(lhs < rhs, true_value, false_value)
-}
-
 #[derive(Copy, Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 struct uint128 {
@@ -1118,29 +1112,28 @@ where
         }
 
         let even = 1 - (bin_sig.into() & 1);
-        if Float::SPLIT_LAST_DIGIT {
-            let round_down = scaled_sig_mod10 < scaled_half_ulp + even;
-            let round_up = ten < upper;
-            let round = i32::from(round_down) + i32::from(round_up);
-            let d = digit as u8 + u8::from(cmp >= 0);
+        let round_down = scaled_sig_mod10 < scaled_half_ulp + even;
+        let round_up = ten < upper;
+        let round = i32::from(round_down) + i32::from(round_up);
+        let d = digit as u8 + u8::from(cmp >= 0);
+        let dec_sig = div10 as i64 + i64::from(round_up);
+        if Float::NUM_BITS == 64 {
             return ToDecimalResult {
-                sig: div10 as i64 + i64::from(round_up),
+                sig: dec_sig,
                 exp: dec_exp,
                 last_digit: if round != 0 { 0 } else { d },
             };
+        } else {
+            return ToDecimalResult {
+                sig: dec_sig * 10 + if round != 0 { 0 } else { i64::from(d) },
+                exp: dec_exp,
+                last_digit: 0,
+            };
         }
-        let shorter = (integral.into() - digit) as i64;
-        let longer = (integral.into() + u64::from(cmp >= 0)) as i64;
-        let dec_sig = select_if_less(scaled_sig_mod10, scaled_half_ulp + even, shorter, longer);
-        return ToDecimalResult {
-            sig: select_if_less(ten, upper, shorter + 10, dec_sig),
-            exp: dec_exp,
-            last_digit: 0,
-        };
     }
     // Fallback to Schubfach to guarantee correctness in boundary cases.
     let r = to_decimal_schubfach(bin_sig, bin_exp, regular);
-    if !Float::SPLIT_LAST_DIGIT {
+    if Float::NUM_BITS != 64 {
         return r;
     }
     let div10_sig64 = (1u64 << 63) / 5 + 1;
