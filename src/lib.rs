@@ -1031,6 +1031,7 @@ where
             compute_dec_exp(bin_exp as i32, true)
         };
         let even = UInt::from(1) - (bin_sig & UInt::from(1));
+        const HALF: u64 = 1 << 63;
 
         if num_bits == 64 {
             // Scale by 10**(-dec_exp-1) to directly produce the shorter
@@ -1091,11 +1092,10 @@ where
             integral += u64::from(round_up);
 
             // Derive the extra digit from the fractional part (parallel with
-            // rounding). The bias (2**63 + 6) rounds to nearest per xjb paper.
-            const ROUNDING_BIAS: u64 = (1 << 63) + 6;
+            // rounding). +6 is needed for boundary cases.
             let digit_frac = fractional.wrapping_mul(10);
             let mut digit = (umul128_hi64(fractional, 10)
-                + u64::from(digit_frac.wrapping_add(ROUNDING_BIAS) < digit_frac))
+                + u64::from(digit_frac.wrapping_add(HALF + 6) < digit_frac))
                 as i32;
             if fractional == (1u64 << 62) {
                 digit = 2;
@@ -1118,10 +1118,9 @@ where
         let p = umul128(pow10.hi, (bin_sig << exp_shift).into());
         let integral = UInt::truncate((p >> 64) as u64);
         let fractional = p as u64;
-        const HALF_ULP: u64 = 1 << 63;
 
         // Exact half-ulp tie when rounding to nearest integer.
-        let cmp = fractional.wrapping_sub(HALF_ULP) as i64;
+        let cmp = fractional.wrapping_sub(HALF) as i64;
         if cmp == 0 {
             break;
         }
