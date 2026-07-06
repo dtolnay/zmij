@@ -1011,7 +1011,7 @@ fn div10(x: u64) -> u64 {
 // representation, where bin_exp = raw_exp - exp_offset.
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_decimal_fast<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> ToDecimalResult
+fn to_decimal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> ToDecimalResult
 where
     Float: FloatTraits,
     UInt: traits::UInt,
@@ -1225,7 +1225,7 @@ where
             dec.sig = div10 as i64;
         }
     } else {
-        dec = to_decimal_fast::<Float, Float::SigType>(
+        dec = to_decimal::<Float, Float::SigType>(
             bin_sig | Float::IMPLICIT_BIT,
             bin_exp,
             bin_sig != Float::SigType::from(0),
