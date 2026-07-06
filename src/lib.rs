@@ -262,10 +262,7 @@ impl FloatTraits for f64 {
     )))]
     type DecDigitsType = [u64; 2];
 
-    const SPLIT_LAST_DIGIT: bool = cfg!(any(
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-    ));
+    const SPLIT_LAST_DIGIT: bool = true;
 
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
@@ -877,13 +874,10 @@ unsafe fn to_digits_64(
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
     {
-        // Digits/pairs of digits are denoted by letters: value = abbccddeeffgghhii.
-        let abbccddee = (value / 100_000_000) as u32;
+        // Digits/pairs of digits are denoted by letters: value = bbccddeeffgghhii.
+        let bbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        unsafe {
-            write_if(buffer, abbccddee / 100_000_000, extra_digit);
-        }
-        let hi = to_bcd8(u64::from(abbccddee % 100_000_000));
+        let hi = to_bcd8(u64::from(bbccddee));
         if ffgghhii == 0 {
             return DecDigits {
                 digits: [hi + ZEROS, ZEROS],
@@ -1177,11 +1171,7 @@ where
 
     let mut dec;
     let threshold = if Float::NUM_BITS == 64 {
-        if Float::SPLIT_LAST_DIGIT {
-            1_000_000_000_000_000
-        } else {
-            10_000_000_000_000_000
-        }
+        1_000_000_000_000_000
     } else {
         100_000_000
     };
