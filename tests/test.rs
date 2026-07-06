@@ -118,6 +118,13 @@ mod ftoa_test {
     use super::ftoa;
 
     #[test]
+    fn fixed_with_zeros() {
+        assert_eq!(ftoa(43210.0), "43210.0");
+        assert_eq!(ftoa(43210.1), "43210.1");
+        assert_eq!(ftoa(10000.0), "10000.0");
+    }
+
+    #[test]
     fn normal() {
         assert_eq!(ftoa(6.62607e-34), "6.62607e-34");
         assert_eq!(ftoa(1.342178e+08), "134217800.0");

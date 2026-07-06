@@ -79,9 +79,9 @@ mod traits;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 use crate::stdarch_x86::{
-    __m128i, _mm_add_epi64, _mm_cmpgt_epi8, _mm_load_si128, _mm_movemask_epi8, _mm_mul_epu32,
-    _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128, _mm_set_epi64x, _mm_setzero_si128,
-    _mm_srli_epi64,
+    __m128i, _mm_add_epi64, _mm_cmpgt_epi8, _mm_cvtsi128_si64, _mm_load_si128, _mm_movemask_epi8,
+    _mm_mul_epu32, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128, _mm_set_epi64x,
+    _mm_setzero_si128, _mm_srli_epi64,
 };
 #[cfg(all(
     target_arch = "x86_64",
@@ -102,12 +102,13 @@ use crate::stdarch_x86::{
 use crate::traits::Float as _;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 use core::arch::aarch64::{
-    int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, vaddq_u16, vcgtzq_s8,
-    vdupq_n_s8, vget_lane_u64, vmla_n_s32, vmlaq_n_s16, vmlaq_n_s32, vqdmulh_n_s32, vqdmulhq_n_s16,
-    vqdmulhq_n_s32, vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32,
-    vreinterpret_u32_s32, vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32,
-    vreinterpretq_s8_u8, vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u8_s16,
-    vrev64q_u8, vshll_n_u16, vshr_n_u32, vshrn_n_u16,
+    int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, uint8x8_t, vaddq_u16,
+    vcgtzq_s8, vcombine_s32, vcreate_u64, vdup_n_s32, vdupq_n_s8, vget_lane_u64, vget_low_u8,
+    vmla_n_s32, vmlaq_n_s16, vmlaq_n_s32, vqdmulh_n_s32, vqdmulhq_n_s16, vqdmulhq_n_s32,
+    vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32, vreinterpret_u32_s32,
+    vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32, vreinterpretq_s8_u8,
+    vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u8_s16, vrev64_u8, vrev64q_u8,
+    vshll_n_u16, vshr_n_u32, vshrn_n_u16,
 };
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
@@ -534,6 +535,15 @@ static EXP_STRINGS: ExpStringTable = {
     ExpStringTable { data }
 };
 
+#[cfg(any(
+    not(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        target_feature = "sse4.1",
+        not(miri)
+    )),
+    all(test, target_endian = "little"),
+))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn count_trailing_nonzeros(x: u64) -> usize {
     // We count the number of bytes until there are only zeros left.
@@ -582,32 +592,28 @@ const NEG10K: u32 = ((1u64 << 32) - 10000) as u32;
 
 const DIV100_EXP: i32 = 19;
 const DIV100_SIG: u32 = (1 << DIV100_EXP) / 100 + 1;
+#[cfg(not(all(
+    target_arch = "x86_64",
+    target_feature = "sse2",
+    not(target_feature = "sse4.1"),
+    not(miri)
+)))]
 const NEG100: u32 = (1 << 16) - 100;
 
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+)))]
 const DIV10_EXP: i32 = 10;
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+)))]
 const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(miri))))]
 const NEG10: u32 = (1 << 8) - 10;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
-
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_bcd8(abcdefgh: u64) -> u64 {
-    // An optimization from Xiang JunBo.
-    // Three steps BCD. Base 10000 -> base 100 -> base 10.
-    // div and mod are evaluated simultaneously as, e.g.
-    //   (abcdefgh / 10000) << 32 + (abcdefgh % 10000)
-    //      == abcdefgh + (2**32 - 10000) * (abcdefgh / 10000)))
-    // where the division on the RHS is implemented by the usual multiply + shift
-    // trick and the fractional bits are masked away.
-    let abcd_efgh =
-        abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-    let ab_cd_ef_gh = abcd_efgh
-        + u64::from(NEG100) * (((abcd_efgh * u64::from(DIV100_SIG)) >> DIV100_EXP) & 0x7f0000007f);
-    let a_b_c_d_e_f_g_h = ab_cd_ef_gh
-        + u64::from(NEG10)
-            * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
-    a_b_c_d_e_f_g_h.to_be()
-}
 
 #[cfg_attr(feature = "no-panic", inline)]
 unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
@@ -620,8 +626,8 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[repr(C, align(64))]
 struct SseConstants {
-    div10k: u128,
-    neg10k: u128,
+    // Ordered so that the values used to format floats fit in a single cache
+    // line.
     div100: u128,
     div10: u128,
     #[cfg(target_feature = "sse4.1")]
@@ -634,6 +640,8 @@ struct SseConstants {
     hundred: u128,
     #[cfg(not(target_feature = "sse4.1"))]
     moddiv10: u128,
+    div10k: u128,
+    neg10k: u128,
     zeros: u128,
 }
 
@@ -666,8 +674,6 @@ impl SseConstants {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 static SSE_CONSTS: SseConstants = SseConstants {
-    div10k: SseConstants::splat64(DIV10K_SIG as u64),
-    neg10k: SseConstants::splat64(NEG10K as u64),
     div100: SseConstants::splat32(DIV100_SIG),
     div10: SseConstants::splat16(((1u32 << 16) / 10 + 1) as u16),
     #[cfg(target_feature = "sse4.1")]
@@ -681,36 +687,24 @@ static SSE_CONSTS: SseConstants = SseConstants {
     hundred: SseConstants::splat32(100),
     #[cfg(not(target_feature = "sse4.1"))]
     moddiv10: SseConstants::splat16(10 * (1 << 8) - 1),
+    div10k: SseConstants::splat64(DIV10K_SIG as u64),
+    neg10k: SseConstants::splat64(NEG10K as u64),
     zeros: SseConstants::splat64(ZEROS),
 };
 
-// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
-// individual BCD digits in SIMD lane order (caller must shuffle).
+// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m128i {
-    let div10k = unsafe { _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>()) };
-    let neg10k = unsafe { _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>()) };
-    let div100 = unsafe { _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>()) };
-    let div10 = unsafe { _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>()) };
-    #[cfg(target_feature = "sse4.1")]
-    let neg100 = unsafe { _mm_load_si128(ptr::addr_of!(c.neg100).cast::<__m128i>()) };
-    #[cfg(target_feature = "sse4.1")]
-    let neg10 = unsafe { _mm_load_si128(ptr::addr_of!(c.neg10).cast::<__m128i>()) };
-    #[cfg(not(target_feature = "sse4.1"))]
-    let hundred = unsafe { _mm_load_si128(ptr::addr_of!(c.hundred).cast::<__m128i>()) };
-    #[cfg(not(target_feature = "sse4.1"))]
-    let moddiv10 = unsafe { _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>()) };
-
+fn to_digits_4x4digits(y: __m128i, c: &SseConstants) -> __m128i {
     unsafe {
-        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
-        let y: __m128i = _mm_add_epi64(
-            x,
-            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
-        );
+        let div100 = _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>());
+        let div10 = _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>());
 
         #[cfg(target_feature = "sse4.1")]
         {
+            let neg100 = _mm_load_si128(ptr::addr_of!(c.neg100).cast::<__m128i>());
+            let neg10 = _mm_load_si128(ptr::addr_of!(c.neg10).cast::<__m128i>());
+
             // _mm_mullo_epi32 is SSE 4.1
             let z: __m128i = _mm_add_epi64(
                 y,
@@ -721,6 +715,9 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m12
 
         #[cfg(not(target_feature = "sse4.1"))]
         {
+            let hundred = _mm_load_si128(ptr::addr_of!(c.hundred).cast::<__m128i>());
+            let moddiv10 = _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>());
+
             let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
             let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
             let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
@@ -732,39 +729,92 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m12
     }
 }
 
+// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
+// individual BCD digits in SIMD lane order (caller must shuffle).
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m128i {
+    unsafe {
+        let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
+        let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
+
+        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
+        let y: __m128i = _mm_add_epi64(
+            x,
+            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
+        );
+
+        to_digits_4x4digits(y, c)
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+#[repr(C, align(64))]
+struct NeonConstants {
+    mul_const: u64,
+    hundred_million: u64,
+    multipliers32: int32x4_t,
+    multipliers16: int16x8_t,
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+impl NeonConstants {
+    const NEG10K: i32 = -10000 + 0x10000;
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+static NEON_CONSTS: NeonConstants = NeonConstants {
+    mul_const: 0xabcc77118461cefd,
+    hundred_million: 100000000,
+    multipliers32: unsafe {
+        mem::transmute::<[i32; 4], int32x4_t>([
+            DIV10K_SIG as i32,
+            NeonConstants::NEG10K,
+            (DIV100_SIG << 12) as i32,
+            NEG100 as i32,
+        ])
+    },
+    multipliers16: unsafe {
+        mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
+    },
+};
+
+// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &NeonConstants) -> uint8x16_t {
+    unsafe {
+        // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
+        // MUL.
+        asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
+
+        let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
+            ddee_bbcc_hhii_ffgg,
+            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
+        );
+        let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
+            ddee_bbcc_hhii_ffgg,
+            dd_bb_hh_ff,
+            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
+        ));
+        let high_10s: int16x8_t = vqdmulhq_n_s16(
+            ee_dd_cc_bb_ii_hh_gg_ff,
+            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
+        );
+        vreinterpretq_u8_s16(vmlaq_n_s16(
+            ee_dd_cc_bb_ii_hh_gg_ff,
+            high_10s,
+            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
+        ))
+    }
+}
+
+// An optimized version for NEON by Dougall Johnson.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
 fn to_unshuffled_digits(value: u64) -> uint8x16_t {
-    // An optimized version for NEON by Dougall Johnson.
-
-    const NEG10K: i32 = -10000 + 0x10000;
-
-    #[repr(C, align(64))]
-    struct Consts {
-        mul_const: u64,
-        hundred_million: u64,
-        multipliers32: int32x4_t,
-        multipliers16: int16x8_t,
-    }
-
-    static CONSTS: Consts = Consts {
-        mul_const: 0xabcc77118461cefd,
-        hundred_million: 100000000,
-        multipliers32: unsafe {
-            mem::transmute::<[i32; 4], int32x4_t>([
-                DIV10K_SIG as i32,
-                NEG10K,
-                (DIV100_SIG << 12) as i32,
-                NEG100 as i32,
-            ])
-        },
-        multipliers16: unsafe {
-            mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
-        },
-    };
-
-    let mut c = ptr::addr_of!(CONSTS);
+    let mut c = ptr::addr_of!(NEON_CONSTS);
 
     // Compiler barrier, or clang doesn't load from memory and generates 15
     // more instructions.
@@ -802,31 +852,115 @@ fn to_unshuffled_digits(value: u64) -> uint8x16_t {
             mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[1],
         );
 
-        let mut ddee_bbcc_hhii_ffgg: int32x4_t =
+        let ddee_bbcc_hhii_ffgg: int32x4_t =
             vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
 
-        // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
-        // MUL.
-        asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
+        to_digits_4x4digits(ddee_bbcc_hhii_ffgg, c)
+    }
+}
 
-        let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
-            ddee_bbcc_hhii_ffgg,
-            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[2],
-        );
-        let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
-            ddee_bbcc_hhii_ffgg,
-            dd_bb_hh_ff,
-            mem::transmute::<int32x4_t, [i32; 4]>(c.multipliers32)[3],
-        ));
-        let high_10s: int16x8_t = vqdmulhq_n_s16(
-            ee_dd_cc_bb_ii_hh_gg_ff,
-            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[0],
-        );
-        vreinterpretq_u8_s16(vmlaq_n_s16(
-            ee_dd_cc_bb_ii_hh_gg_ff,
-            high_10s,
-            mem::transmute::<int16x8_t, [i16; 8]>(c.multipliers16)[1],
-        ))
+struct BcdResult {
+    bcd: u64,
+    len: usize,
+}
+
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_bcd8(abcdefgh: u32) -> BcdResult {
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    )))]
+    {
+        // An optimization from Xiang JunBo.
+        // Three steps BCD. Base 10000 -> base 100 -> base 10.
+        // div and mod are evaluated simultaneously as, e.g.
+        //   (abcdefgh / 10000) << 32 + (abcdefgh % 10000)
+        //      == abcdefgh + (2**32 - 10000) * (abcdefgh / 10000)))
+        // where the division on the RHS is implemented by the usual multiply + shift
+        // trick and the fractional bits are masked away.
+        let abcd_efgh = u64::from(abcdefgh)
+            + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let ab_cd_ef_gh = abcd_efgh
+            + u64::from(NEG100)
+                * (((abcd_efgh * u64::from(DIV100_SIG)) >> DIV100_EXP) & 0x7f0000007f);
+        let a_b_c_d_e_f_g_h = ab_cd_ef_gh
+            + u64::from(NEG10)
+                * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
+        let result = a_b_c_d_e_f_g_h.to_be();
+        BcdResult {
+            bcd: result,
+            len: count_trailing_nonzeros(result),
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    {
+        // Load constants from memory.
+        let mut c = ptr::addr_of!(SSE_CONSTS);
+        let c = unsafe {
+            asm!("/*{0}*/", inout(reg) c);
+            &*c
+        };
+
+        #[cfg(target_feature = "sse4.1")]
+        {
+            let abcd_efgh = u64::from(abcdefgh)
+                + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+            let unshuffled_bcd = unsafe {
+                _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
+            } as u64;
+            let len = if unshuffled_bcd != 0 {
+                8 - unshuffled_bcd.trailing_zeros() / 8
+            } else {
+                0
+            };
+            BcdResult {
+                bcd: unshuffled_bcd.swap_bytes(),
+                len: len as usize,
+            }
+        }
+
+        #[cfg(not(target_feature = "sse4.1"))]
+        {
+            // Evaluate the 4 digit limbs and arrange them such that we get a
+            // result which is in the correct order.
+            let abcd_efgh = (u64::from(abcdefgh) << 32)
+                - ((10000u64 << 32) - 1)
+                    * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+            let bcd = unsafe {
+                _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
+            } as u64;
+            BcdResult {
+                bcd,
+                len: count_trailing_nonzeros(bcd),
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    {
+        // Load constants from memory.
+        let mut c = ptr::addr_of!(NEON_CONSTS);
+        let c = unsafe {
+            asm!("/*{0}*/", inout(reg) c);
+            &*c
+        };
+
+        let abcd_efgh_64 = u64::from(abcdefgh)
+            + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let result = unsafe {
+            let abcd_efgh: int32x4_t = vcombine_s32(
+                vreinterpret_s32_u64(vcreate_u64(abcd_efgh_64)),
+                vdup_n_s32(0),
+            );
+            let digits_128: uint8x16_t = to_digits_4x4digits(abcd_efgh, c);
+            let digits: uint8x8_t = vget_low_u8(digits_128);
+            vget_lane_u64(vreinterpret_u64_u8(vrev64_u8(digits)), 0)
+        };
+        BcdResult {
+            bcd: result,
+            len: count_trailing_nonzeros(result),
+        }
     }
 }
 
@@ -850,17 +984,17 @@ unsafe fn to_digits_64(
         // Digits/pairs of digits are denoted by letters: value = bbccddeeffgghhii.
         let bbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        let hi = to_bcd8(u64::from(bbccddee));
+        let hi = to_bcd8(bbccddee);
         if ffgghhii == 0 {
             return DecDigits {
-                digits: [hi + ZEROS, ZEROS],
-                num_digits: count_trailing_nonzeros(hi),
+                digits: [hi.bcd + ZEROS, ZEROS],
+                num_digits: hi.len,
             };
         }
-        let lo = to_bcd8(u64::from(ffgghhii));
+        let lo = to_bcd8(ffgghhii);
         DecDigits {
-            digits: [hi + ZEROS, lo + ZEROS],
-            num_digits: 8 + count_trailing_nonzeros(lo),
+            digits: [hi.bcd + ZEROS, lo.bcd + ZEROS],
+            num_digits: 8 + lo.len,
         }
     }
 
@@ -926,10 +1060,10 @@ unsafe fn to_digits_32(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
     unsafe {
         write_if(buffer, (value / 100_000_000) as u32, extra_digit);
     }
-    let bcd = to_bcd8(value % 100_000_000);
+    let result = to_bcd8((value % 100_000_000) as u32);
     DecDigits {
-        digits: bcd + ZEROS,
-        num_digits: count_trailing_nonzeros(bcd),
+        digits: result.bcd + ZEROS,
+        num_digits: result.len,
     }
 }
 
