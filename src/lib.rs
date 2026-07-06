@@ -765,11 +765,7 @@ fn to_unshuffled_digits(
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_unshuffled_digits<const SPLIT_LAST_DIGIT: bool>(
-    buffer: *mut u8,
-    value: u64,
-    extra_digit: bool,
-) -> uint8x16_t {
+fn to_unshuffled_digits(value: u64) -> uint8x16_t {
     // An optimized version for NEON by Dougall Johnson.
 
     const NEG10K: i32 = -10000 + 0x10000;
@@ -818,18 +814,9 @@ unsafe fn to_unshuffled_digits<const SPLIT_LAST_DIGIT: bool>(
     let abbccddee = (umul128(value, c.mul_const) >> 90) as u64;
     let ffgghhii = value - abbccddee * hundred_million;
 
-    let mut bbccddee = abbccddee;
-    if !SPLIT_LAST_DIGIT {
-        let a = (umul128(abbccddee, c.mul_const) >> 90) as u64;
-        bbccddee = abbccddee - a * hundred_million;
-        unsafe {
-            write_if(buffer, a as u32, extra_digit);
-        }
-    }
-
     unsafe {
         let ffgghhii_bbccddee_64: uint64x1_t =
-            mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | bbccddee);
+            mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | abbccddee);
         let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
 
         let bbcc_ffgg: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
@@ -883,7 +870,7 @@ struct DecDigits<Float: FloatTraits> {
 unsafe fn to_digits_64(
     #[allow(unused_variables)] buffer: *mut u8,
     value: u64,
-    extra_digit: bool,
+    #[allow(unused_variables)] extra_digit: bool,
 ) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
@@ -913,7 +900,7 @@ unsafe fn to_digits_64(
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         unsafe {
-            let unshuffled_digits = to_unshuffled_digits::<true>(buffer, value, extra_digit);
+            let unshuffled_digits = to_unshuffled_digits(value);
             let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
