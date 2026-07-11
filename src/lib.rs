@@ -1199,7 +1199,6 @@ where
         compute_dec_exp(bin_exp as i32, true)
     };
     let even = UInt::from(1) - (bin_sig & UInt::from(1));
-    const HALF: u64 = 1 << 63;
     const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
 
     if !regular {
@@ -1221,8 +1220,8 @@ where
         let mut digit = umul128_hi64(fractional, 10) as i32;
         // Lower midpoint of the asymmetric interval in digit space.
         let lo_frac = fractional.wrapping_sub(down_half_ulp);
-        let lo_rem = lo_frac.wrapping_mul(10);
-        let lo = (umul128_hi64(lo_frac, 10) + u64::from(lo_rem != 0)) as i32;
+        let lo = umul128_add_hi64(lo_frac, 10, !0) as i32;
+        const HALF: u64 = 1 << 63;
         digit += if rem == HALF {
             digit & 1
         } else {
@@ -1232,12 +1231,11 @@ where
             digit = lo;
         }
         if num_bits == 64 {
-            let has_digit = !(round_up || round_down);
             return ToDecimalResult {
                 sig: integral as i64,
                 exp: dec_exp,
                 last_digit: digit as u8,
-                has_last_digit: has_digit,
+                has_last_digit: !(round_up || round_down),
             };
         }
         if round_up || round_down {
