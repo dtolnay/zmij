@@ -221,7 +221,12 @@ trait FloatTraits: traits::Float {
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self>;
+    unsafe fn to_digits(
+        buffer: *mut u8,
+        value: u64,
+        extra_digit: bool,
+        c: &Constants,
+    ) -> DecDigits<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -238,7 +243,12 @@ impl FloatTraits for f32 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
+    unsafe fn to_digits(
+        buffer: *mut u8,
+        value: u64,
+        extra_digit: bool,
+        _c: &Constants,
+    ) -> DecDigits<Self> {
         unsafe { to_digits_32(buffer, value, extra_digit) }
     }
 }
@@ -265,8 +275,13 @@ impl FloatTraits for f64 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<Self> {
-        unsafe { to_digits_64(buffer, value, extra_digit) }
+    unsafe fn to_digits(
+        buffer: *mut u8,
+        value: u64,
+        extra_digit: bool,
+        c: &Constants,
+    ) -> DecDigits<Self> {
+        unsafe { to_digits_64(buffer, value, extra_digit, c) }
     }
 }
 
@@ -627,7 +642,7 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
 struct Constants {
     threshold: u64,
     // +6 is needed for boundary cases found by verify.py.
-    half: u64,
+    biased_half: u64,
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: u64,
@@ -706,7 +721,7 @@ impl Constants {
 
 static CONSTS: Constants = Constants {
     threshold: 1_000_000_000_000_000,
-    half: (1 << 63) + 6,
+    biased_half: (1 << 63) + 6,
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: 0xabcc77118461cefd,
@@ -804,13 +819,11 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i 
     unsafe {
         let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
         let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
-
         let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
         let y: __m128i = _mm_add_epi64(
             x,
             _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
         );
-
         to_digits_4x4digits(y, c)
     }
 }
@@ -849,16 +862,7 @@ fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &Constants) -> uin
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_unshuffled_digits(value: u64) -> uint8x16_t {
-    let mut c = ptr::addr_of!(CONSTS);
-
-    // Compiler barrier, or clang doesn't load from memory and generates 15
-    // more instructions.
-    let c = unsafe {
-        asm!("/*{0}*/", inout(reg) c);
-        &*c
-    };
-
+fn to_unshuffled_digits(value: u64, c: &Constants) -> uint8x16_t {
     let mut hundred_million = c.hundred_million;
 
     // Compiler barrier, or clang narrows the load to 32-bit and unpairs it.
@@ -1011,6 +1015,7 @@ unsafe fn to_digits_64(
     #[allow(unused_variables)] buffer: *mut u8,
     value: u64,
     #[allow(unused_variables)] extra_digit: bool,
+    #[allow(unused_variables)] c: &Constants,
 ) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
@@ -1037,7 +1042,7 @@ unsafe fn to_digits_64(
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         unsafe {
-            let unshuffled_digits = to_unshuffled_digits(value);
+            let unshuffled_digits = to_unshuffled_digits(value, c);
             let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
             let str: uint16x8_t = vaddq_u16(
                 vreinterpretq_u16_u8(digits),
@@ -1059,19 +1064,12 @@ unsafe fn to_digits_64(
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
 
-        let mut c = ptr::addr_of!(CONSTS);
-        // Load constants from memory.
         unsafe {
-            asm!("/*{0}*/", inout(reg) c);
-        }
-
-        let zeros = unsafe { _mm_load_si128(ptr::addr_of!((*c).zeros).cast::<__m128i>()) };
-
-        unsafe {
-            let unshuffled_bcd = to_unshuffled_digits(abbccddee, ffgghhii, &*c);
+            let zeros = _mm_load_si128(ptr::addr_of!(c.zeros).cast::<__m128i>());
+            let unshuffled_bcd = to_unshuffled_digits(abbccddee, ffgghhii, c);
             #[cfg(target_feature = "sse4.1")]
             let bcd = {
-                let bswap = _mm_load_si128(ptr::addr_of!((*c).bswap).cast::<__m128i>());
+                let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
                 // SSSE3
                 _mm_shuffle_epi8(unshuffled_bcd, bswap)
             };
@@ -1337,7 +1335,7 @@ where
     integral += u64::from(round_up); // Compute integral before digit.
 
     // Derive the extra digit from the fractional part (parallel with rounding).
-    let mut digit = umul128_add_hi64(fractional, 10, c.half) as i32;
+    let mut digit = umul128_add_hi64(fractional, 10, c.biased_half) as i32;
     if fractional == (1u64 << 62) {
         digit = 2; // Round 2.5 to 2.
     }
@@ -1369,6 +1367,7 @@ where
     #[cfg_attr(miri, allow(unused_mut))]
     let mut c = ptr::addr_of!(CONSTS);
     let c = unsafe {
+        // Load constants from memory.
         #[cfg(not(miri))]
         asm!("/*{0}*/", inout(reg) c);
         &*c
@@ -1418,7 +1417,7 @@ where
 
     let length = unsafe {
         let split_last_digit = Float::NUM_BITS == 64;
-        let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit);
+        let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit, c);
         buffer
             .add(usize::from(extra_digit) + usize::from(!split_last_digit))
             .cast::<Float::DecDigitsType>()
