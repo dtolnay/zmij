@@ -146,6 +146,12 @@ const fn umul128_hi64(x: u64, y: u64) -> u64 {
     (umul128(x, y) >> 64) as u64
 }
 
+// Returns (x * y + c) >> 64.
+#[cfg_attr(feature = "no-panic", inline)]
+fn umul128_add_hi64(x: u64, y: u64, c: u64) -> u64 {
+    ((u128::from(x) * u128::from(y) + u128::from(c)) >> 64) as u64
+}
+
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     let p = umul128(x_hi, y);
@@ -1325,9 +1331,7 @@ where
 
     // Derive the extra digit from the fractional part (parallel with rounding).
     // +6 is needed for boundary cases found by verify.py.
-    let rem = fractional.wrapping_mul(10);
-    let mut digit =
-        (umul128_hi64(fractional, 10) + u64::from(rem.wrapping_add(HALF + 6) < rem)) as i32;
+    let mut digit = umul128_add_hi64(fractional, 10, HALF + 6) as i32;
     if fractional == (1u64 << 62) {
         digit = 2; // Round 2.5 to 2.
     }
