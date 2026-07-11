@@ -1107,6 +1107,7 @@ struct ToDecimalResult {
     sig: i64,
     exp: i32,
     last_digit: u8,
+    has_last_digit: bool,
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
@@ -1149,6 +1150,7 @@ where
             sig: shorter.into() as i64,
             exp: dec_exp,
             last_digit: 0,
+            has_last_digit: false,
         };
     }
 
@@ -1159,6 +1161,7 @@ where
         sig: hint::select_unpredictable(lower == upper, lower, dec_sig).into() as i64,
         exp: dec_exp,
         last_digit: 0,
+        has_last_digit: false,
     }
 }
 
@@ -1230,20 +1233,23 @@ where
         if digit < lo {
             digit = lo;
         }
-        if round_up || round_down {
-            digit = 0;
-        }
         if num_bits == 64 {
+            let has_digit = !(round_up || round_down);
             return ToDecimalResult {
                 sig: integral as i64,
                 exp: dec_exp,
                 last_digit: digit as u8,
+                has_last_digit: has_digit,
             };
+        }
+        if round_up || round_down {
+            digit = 0;
         }
         return ToDecimalResult {
             sig: integral as i64 * 10 + i64::from(digit),
             exp: dec_exp,
             last_digit: 0,
+            has_last_digit: false,
         };
     }
 
@@ -1275,6 +1281,7 @@ where
             sig: integral as i64 * 10 + i64::from(digit),
             exp: dec_exp,
             last_digit: 0,
+            has_last_digit: false,
         };
     }
 
@@ -1337,11 +1344,8 @@ where
     ToDecimalResult {
         sig: integral as i64,
         exp: dec_exp,
-        last_digit: if round_up || round_down {
-            0
-        } else {
-            digit as u8
-        },
+        last_digit: digit as u8,
+        has_last_digit: !(round_up || round_down),
     }
 }
 
@@ -1393,6 +1397,7 @@ where
         if Float::NUM_BITS == 64 {
             let div10 = div10(dec.sig as u64);
             dec.last_digit = (dec.sig - div10 as i64 * 10) as u8;
+            dec.has_last_digit = dec.last_digit != 0;
             dec.sig = div10 as i64;
         }
     } else {
@@ -1423,7 +1428,7 @@ where
                 .add(usize::from(extra_digit) + 16)
                 .write(b'0' + dec.last_digit);
             usize::from(extra_digit)
-                + if dec.last_digit != 0 {
+                + if dec.has_last_digit {
                     17
                 } else {
                     dig.num_digits
