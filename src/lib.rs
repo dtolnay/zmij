@@ -632,7 +632,8 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
 #[repr(C, align(64))]
 struct Constants {
     threshold: u64,
-    padding: u64,
+    // +6 is needed for boundary cases found by verify.py.
+    half: u64,
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: u64,
@@ -711,7 +712,7 @@ impl Constants {
 
 static CONSTS: Constants = Constants {
     threshold: 1_000_000_000_000_000,
-    padding: 0,
+    half: (1 << 63) + 6,
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: 0xabcc77118461cefd,
@@ -1181,7 +1182,12 @@ fn div10(x: u64) -> u64 {
 // representation, where bin_exp = raw_exp - exp_offset.
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_decimal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool) -> ToDecimalResult
+fn to_decimal<Float, UInt>(
+    bin_sig: UInt,
+    raw_exp: i64,
+    regular: bool,
+    c: &Constants,
+) -> ToDecimalResult
 where
     Float: FloatTraits,
     UInt: traits::UInt,
@@ -1330,8 +1336,7 @@ where
     integral += u64::from(round_up); // Compute integral before digit.
 
     // Derive the extra digit from the fractional part (parallel with rounding).
-    // +6 is needed for boundary cases found by verify.py.
-    let mut digit = umul128_add_hi64(fractional, 10, HALF + 6) as i32;
+    let mut digit = umul128_add_hi64(fractional, 10, c.half) as i32;
     if fractional == (1u64 << 62) {
         digit = 2; // Round 2.5 to 2.
     }
@@ -1401,6 +1406,7 @@ where
             bin_sig | Float::IMPLICIT_BIT,
             bin_exp,
             bin_sig != Float::SigType::from(0),
+            &CONSTS,
         );
     }
     let mut dec_exp = dec.exp;
