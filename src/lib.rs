@@ -623,43 +623,71 @@ unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[repr(C, align(64))]
-struct SseConstants {
+struct Constants {
+    threshold: u64,
+    padding: u64,
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    mul_const: u64,
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    hundred_million: u64,
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    multipliers32: int32x4_t,
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    multipliers16: int16x8_t,
+
     // Ordered so that the values used to format floats fit in a single cache
     // line.
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div100: u128,
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10: u128,
-    #[cfg(target_feature = "sse4.1")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     neg100: u128,
-    #[cfg(target_feature = "sse4.1")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     neg10: u128,
-    #[cfg(target_feature = "sse4.1")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     bswap: u128,
-    #[cfg(not(target_feature = "sse4.1"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "sse4.1"),
+        not(miri)
+    ))]
     hundred: u128,
-    #[cfg(not(target_feature = "sse4.1"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "sse4.1"),
+        not(miri)
+    ))]
     moddiv10: u128,
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10k: u128,
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     neg10k: u128,
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: u128,
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-impl SseConstants {
+impl Constants {
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     const fn splat64(x: u64) -> u128 {
         ((x as u128) << 64) | x as u128
     }
 
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     const fn splat32(x: u32) -> u128 {
         Self::splat64(((x as u64) << 32) | x as u64)
     }
 
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     const fn splat16(x: u16) -> u128 {
         Self::splat32(((x as u32) << 16) | x as u32)
     }
 
-    #[cfg(target_feature = "sse4.1")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     const fn pack8(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8) -> u64 {
         ((h as u64) << 56)
             | ((g as u64) << 48)
@@ -670,32 +698,70 @@ impl SseConstants {
             | ((b as u64) << 8)
             | a as u64
     }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    const NEG10K: i32 = -10000 + 0x10000;
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-static SSE_CONSTS: SseConstants = SseConstants {
-    div100: SseConstants::splat32(DIV100_SIG),
-    div10: SseConstants::splat16(((1u32 << 16) / 10 + 1) as u16),
-    #[cfg(target_feature = "sse4.1")]
-    neg100: SseConstants::splat32(NEG100),
-    #[cfg(target_feature = "sse4.1")]
-    neg10: SseConstants::splat16((1 << 8) - 10),
-    #[cfg(target_feature = "sse4.1")]
-    bswap: SseConstants::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
-        | (SseConstants::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
-    #[cfg(not(target_feature = "sse4.1"))]
-    hundred: SseConstants::splat32(100),
-    #[cfg(not(target_feature = "sse4.1"))]
-    moddiv10: SseConstants::splat16(10 * (1 << 8) - 1),
-    div10k: SseConstants::splat64(DIV10K_SIG as u64),
-    neg10k: SseConstants::splat64(NEG10K as u64),
-    zeros: SseConstants::splat64(ZEROS),
+static CONSTS: Constants = Constants {
+    threshold: 1_000_000_000_000_000,
+    padding: 0,
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    mul_const: 0xabcc77118461cefd,
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    hundred_million: 100000000,
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    multipliers32: unsafe {
+        mem::transmute::<[i32; 4], int32x4_t>([
+            DIV10K_SIG as i32,
+            Constants::NEG10K,
+            (DIV100_SIG << 12) as i32,
+            NEG100 as i32,
+        ])
+    },
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    multipliers16: unsafe {
+        mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
+    },
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    div100: Constants::splat32(DIV100_SIG),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    div10: Constants::splat16(((1u32 << 16) / 10 + 1) as u16),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    neg100: Constants::splat32(NEG100),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    neg10: Constants::splat16((1 << 8) - 10),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    bswap: Constants::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
+        | (Constants::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "sse4.1"),
+        not(miri)
+    ))]
+    hundred: Constants::splat32(100),
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "sse4.1"),
+        not(miri)
+    ))]
+    moddiv10: Constants::splat16(10 * (1 << 8) - 1),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    div10k: Constants::splat64(DIV10K_SIG as u64),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    neg10k: Constants::splat64(NEG10K as u64),
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    zeros: Constants::splat64(ZEROS),
 };
 
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_digits_4x4digits(y: __m128i, c: &SseConstants) -> __m128i {
+fn to_digits_4x4digits(y: __m128i, c: &Constants) -> __m128i {
     unsafe {
         let div100 = _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>());
         let div10 = _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>());
@@ -733,7 +799,7 @@ fn to_digits_4x4digits(y: __m128i, c: &SseConstants) -> __m128i {
 // individual BCD digits in SIMD lane order (caller must shuffle).
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m128i {
+fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i {
     unsafe {
         let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
         let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
@@ -748,41 +814,10 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &SseConstants) -> __m12
     }
 }
 
-#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-#[repr(C, align(64))]
-struct NeonConstants {
-    mul_const: u64,
-    hundred_million: u64,
-    multipliers32: int32x4_t,
-    multipliers16: int16x8_t,
-}
-
-#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-impl NeonConstants {
-    const NEG10K: i32 = -10000 + 0x10000;
-}
-
-#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-static NEON_CONSTS: NeonConstants = NeonConstants {
-    mul_const: 0xabcc77118461cefd,
-    hundred_million: 100000000,
-    multipliers32: unsafe {
-        mem::transmute::<[i32; 4], int32x4_t>([
-            DIV10K_SIG as i32,
-            NeonConstants::NEG10K,
-            (DIV100_SIG << 12) as i32,
-            NEG100 as i32,
-        ])
-    },
-    multipliers16: unsafe {
-        mem::transmute::<[i16; 8], int16x8_t>([0xce0, NEG10 as i16, 0, 0, 0, 0, 0, 0])
-    },
-};
-
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &NeonConstants) -> uint8x16_t {
+fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &Constants) -> uint8x16_t {
     unsafe {
         // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
         // MUL.
@@ -814,7 +849,7 @@ fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &NeonConstants) ->
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
 fn to_unshuffled_digits(value: u64) -> uint8x16_t {
-    let mut c = ptr::addr_of!(NEON_CONSTS);
+    let mut c = ptr::addr_of!(CONSTS);
 
     // Compiler barrier, or clang doesn't load from memory and generates 15
     // more instructions.
@@ -896,7 +931,7 @@ fn to_bcd8(abcdefgh: u32) -> BcdResult {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     {
         // Load constants from memory.
-        let mut c = ptr::addr_of!(SSE_CONSTS);
+        let mut c = ptr::addr_of!(CONSTS);
         let c = unsafe {
             asm!("/*{0}*/", inout(reg) c);
             &*c
@@ -940,7 +975,7 @@ fn to_bcd8(abcdefgh: u32) -> BcdResult {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // Load constants from memory.
-        let mut c = ptr::addr_of!(NEON_CONSTS);
+        let mut c = ptr::addr_of!(CONSTS);
         let c = unsafe {
             asm!("/*{0}*/", inout(reg) c);
             &*c
@@ -1023,7 +1058,7 @@ unsafe fn to_digits_64(
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
 
-        let mut c = ptr::addr_of!(SSE_CONSTS);
+        let mut c = ptr::addr_of!(CONSTS);
         // Load constants from memory.
         unsafe {
             asm!("/*{0}*/", inout(reg) c);
@@ -1324,9 +1359,17 @@ where
     }
     buffer = unsafe { buffer.add(usize::from(Float::is_negative(bits))) };
 
+    #[cfg_attr(miri, allow(unused_mut))]
+    let mut c = ptr::addr_of!(CONSTS);
+    let c = unsafe {
+        #[cfg(not(miri))]
+        asm!("/*{0}*/", inout(reg) c);
+        &*c
+    };
+
     let mut dec;
     let threshold = if Float::NUM_BITS == 64 {
-        1_000_000_000_000_000
+        c.threshold
     } else {
         100_000_000
     };
@@ -1340,7 +1383,7 @@ where
             };
         }
         dec = to_decimal_schubfach(bin_sig, i64::from(1 - Float::EXP_OFFSET), true);
-        while dec.sig < threshold {
+        while dec.sig < threshold as i64 {
             dec.sig *= 10;
             dec.exp -= 1;
         }
@@ -1357,7 +1400,7 @@ where
         );
     }
     let mut dec_exp = dec.exp;
-    let extra_digit = dec.sig >= threshold;
+    let extra_digit = dec.sig >= threshold as i64;
     dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 10_000_000 {
         dec.sig *= 10;
