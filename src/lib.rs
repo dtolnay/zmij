@@ -905,7 +905,7 @@ struct BcdResult {
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_bcd8(abcdefgh: u32) -> BcdResult {
+fn to_bcd8(abcdefgh: u64) -> BcdResult {
     #[cfg(not(any(
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
@@ -918,77 +918,39 @@ fn to_bcd8(abcdefgh: u32) -> BcdResult {
         //      == abcdefgh + (2**32 - 10000) * (abcdefgh / 10000)))
         // where the division on the RHS is implemented by the usual multiply + shift
         // trick and the fractional bits are masked away.
-        let abcd_efgh = u64::from(abcdefgh)
-            + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let abcd_efgh =
+            abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let ab_cd_ef_gh = abcd_efgh
             + u64::from(NEG100)
                 * (((abcd_efgh * u64::from(DIV100_SIG)) >> DIV100_EXP) & 0x7f0000007f);
         let a_b_c_d_e_f_g_h = ab_cd_ef_gh
             + u64::from(NEG10)
                 * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
-        let result = a_b_c_d_e_f_g_h.to_be();
+        let bcd = a_b_c_d_e_f_g_h.to_be();
         BcdResult {
-            bcd: result,
-            len: count_trailing_nonzeros(result),
+            bcd,
+            len: count_trailing_nonzeros(bcd),
         }
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-    {
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    let c = {
         // Load constants from memory.
         let mut c = ptr::addr_of!(CONSTS);
-        let c = unsafe {
+        unsafe {
             asm!("/*{0}*/", inout(reg) c);
             &*c
-        };
-
-        #[cfg(target_feature = "sse4.1")]
-        {
-            let abcd_efgh = u64::from(abcdefgh)
-                + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-            let unshuffled_bcd = unsafe {
-                _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
-            } as u64;
-            let len = if unshuffled_bcd != 0 {
-                8 - unshuffled_bcd.trailing_zeros() / 8
-            } else {
-                0
-            };
-            BcdResult {
-                bcd: unshuffled_bcd.swap_bytes(),
-                len: len as usize,
-            }
         }
-
-        #[cfg(not(target_feature = "sse4.1"))]
-        {
-            // Evaluate the 4 digit limbs and arrange them such that we get a
-            // result which is in the correct order.
-            let abcd_efgh = (u64::from(abcdefgh) << 32)
-                - ((10000u64 << 32) - 1)
-                    * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-            let bcd = unsafe {
-                _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
-            } as u64;
-            BcdResult {
-                bcd,
-                len: count_trailing_nonzeros(bcd),
-            }
-        }
-    }
+    };
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
-        // Load constants from memory.
-        let mut c = ptr::addr_of!(CONSTS);
-        let c = unsafe {
-            asm!("/*{0}*/", inout(reg) c);
-            &*c
-        };
-
-        let abcd_efgh_64 = u64::from(abcdefgh)
-            + u64::from(NEG10K) * ((u64::from(abcdefgh) * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let result = unsafe {
+        let abcd_efgh_64 =
+            abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let bcd = unsafe {
             let abcd_efgh: int32x4_t = vcombine_s32(
                 vreinterpret_s32_u64(vcreate_u64(abcd_efgh_64)),
                 vdup_n_s32(0),
@@ -998,8 +960,46 @@ fn to_bcd8(abcdefgh: u32) -> BcdResult {
             vget_lane_u64(vreinterpret_u64_u8(vrev64_u8(digits)), 0)
         };
         BcdResult {
-            bcd: result,
-            len: count_trailing_nonzeros(result),
+            bcd,
+            len: count_trailing_nonzeros(bcd),
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    {
+        let abcd_efgh =
+            abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let unshuffled_bcd = unsafe {
+            _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
+        } as u64;
+        let len = if unshuffled_bcd != 0 {
+            8 - unshuffled_bcd.trailing_zeros() / 8
+        } else {
+            0
+        };
+        BcdResult {
+            bcd: unshuffled_bcd.swap_bytes(),
+            len: len as usize,
+        }
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "sse4.1"),
+        not(miri)
+    ))]
+    {
+        // Evaluate the 4-digit limbs and arrange them such that we get a
+        // result which is in the correct order.
+        let abcd_efgh = (abcdefgh << 32)
+            - ((10000u64 << 32) - 1) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let bcd = unsafe {
+            _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
+        } as u64;
+        BcdResult {
+            bcd,
+            len: count_trailing_nonzeros(bcd),
         }
     }
 }
@@ -1025,14 +1025,14 @@ unsafe fn to_digits_64(
         // Digits/pairs of digits are denoted by letters: value = bbccddeeffgghhii.
         let bbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
-        let hi = to_bcd8(bbccddee);
+        let hi = to_bcd8(bbccddee as u64);
         if ffgghhii == 0 {
             return DecDigits {
                 digits: [hi.bcd + ZEROS, ZEROS],
                 num_digits: hi.len,
             };
         }
-        let lo = to_bcd8(ffgghhii);
+        let lo = to_bcd8(ffgghhii as u64);
         DecDigits {
             digits: [hi.bcd + ZEROS, lo.bcd + ZEROS],
             num_digits: 8 + lo.len,
@@ -1094,7 +1094,7 @@ unsafe fn to_digits_32(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDig
     unsafe {
         write_if(buffer, (value / 100_000_000) as u32, extra_digit);
     }
-    let result = to_bcd8((value % 100_000_000) as u32);
+    let result = to_bcd8(value % 100_000_000);
     DecDigits {
         digits: result.bcd + ZEROS,
         num_digits: result.len,
