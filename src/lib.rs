@@ -204,8 +204,6 @@ trait FloatTraits: traits::Float {
 
     type DecDigitsType;
 
-    const SPLIT_LAST_DIGIT: bool;
-
     fn to_bits(self) -> Self::SigType;
 
     fn is_negative(bits: Self::SigType) -> bool {
@@ -234,8 +232,6 @@ impl FloatTraits for f32 {
 
     type DecDigitsType = u64;
 
-    const SPLIT_LAST_DIGIT: bool = false;
-
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
@@ -262,8 +258,6 @@ impl FloatTraits for f64 {
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
     type DecDigitsType = [u64; 2];
-
-    const SPLIT_LAST_DIGIT: bool = true;
 
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
@@ -1396,7 +1390,7 @@ where
             dec.sig *= 10;
             dec.exp -= 1;
         }
-        if Float::SPLIT_LAST_DIGIT {
+        if Float::NUM_BITS == 64 {
             let div10 = div10(dec.sig as u64);
             dec.last_digit = (dec.sig - div10 as i64 * 10) as u8;
             dec.sig = div10 as i64;
@@ -1418,12 +1412,13 @@ where
     }
 
     let length = unsafe {
+        let split_last_digit = Float::NUM_BITS == 64;
         let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit);
         buffer
-            .add(usize::from(extra_digit) + usize::from(!Float::SPLIT_LAST_DIGIT))
+            .add(usize::from(extra_digit) + usize::from(!split_last_digit))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
-        if Float::SPLIT_LAST_DIGIT {
+        if split_last_digit {
             buffer
                 .add(usize::from(extra_digit) + 16)
                 .write(b'0' + dec.last_digit);
