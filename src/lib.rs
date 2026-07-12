@@ -1339,6 +1339,8 @@ where
         }
         - 1;
 
+    // Wider fixed-notation ranges than upstream. Upstream uses -4..=6 for float
+    // and -4..=15 for double.
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
         || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
     {
