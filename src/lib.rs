@@ -69,8 +69,6 @@
     clippy::wildcard_imports
 )]
 
-#[cfg(zmij_no_select_unpredictable)]
-mod hint;
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 mod stdarch_x86;
 #[cfg(test)]
@@ -112,8 +110,6 @@ use core::arch::aarch64::{
 };
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
-#[cfg(not(zmij_no_select_unpredictable))]
-use core::hint;
 use core::mem::{self, MaybeUninit};
 use core::ptr;
 use core::slice;
@@ -159,23 +155,6 @@ fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     uint128 {
         hi: (p >> 64) as u64 + u64::from(lo < p as u64),
         lo,
-    }
-}
-
-// Computes high 64 bits of multiplication of x and y, discards the least
-// significant bit and rounds to odd, where x = uint128_t(x_hi << 64) | x_lo.
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn umulhi_inexact_to_odd<UInt>(x_hi: u64, x_lo: u64, y: UInt) -> UInt
-where
-    UInt: traits::UInt,
-{
-    let num_bits = mem::size_of::<UInt>() * 8;
-    if num_bits == 64 {
-        let p = umul192_hi128(x_hi, x_lo, y.into());
-        UInt::truncate(p.hi | u64::from((p.lo >> 1) != 0))
-    } else {
-        let p = (umul128(x_hi, y.into()) >> 32) as u64;
-        UInt::enlarge((p >> 32) as u32 | u32::from((p as u32 >> 1) != 0))
     }
 }
 
@@ -1079,61 +1058,6 @@ struct ToDecimalResult {
     has_last_digit: bool,
 }
 
-#[cfg_attr(feature = "no-panic", no_panic)]
-#[inline]
-fn to_decimal_schubfach<UInt>(bin_sig: UInt, bin_exp: i64, regular: bool) -> ToDecimalResult
-where
-    UInt: traits::UInt,
-{
-    let num_bits = mem::size_of::<UInt>() as i32 * 8;
-    let dec_exp = compute_dec_exp(bin_exp as i32, regular);
-    let exp_shift = compute_exp_shift(bin_exp as i32, dec_exp);
-    let mut pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp) };
-
-    // Shubfach requires strict overestimates of powers of 10.
-    if num_bits == 64 {
-        pow10.lo += 1;
-    } else {
-        pow10.hi += 1;
-    }
-
-    // Shift the significand so that boundaries are integer.
-    // The two extra bits act as guard and sticky for correct rounding.
-    let bin_sig_shifted = bin_sig << 2;
-    let odd = bin_sig & UInt::from(1);
-
-    // Compute the lower and upper bounds of the rounding interval by
-    // multiplying them by the power of 10 and applying modified rounding.
-    let lower = (bin_sig_shifted - (UInt::from(regular) + UInt::from(1))) << exp_shift;
-    let mut lower = umulhi_inexact_to_odd(pow10.hi, pow10.lo, lower) + odd;
-    lower = (lower + UInt::from(3)) >> 2; // ceil
-    let upper = (bin_sig_shifted + UInt::from(2)) << exp_shift;
-    let mut upper = umulhi_inexact_to_odd(pow10.hi, pow10.lo, upper) - odd;
-    upper = upper >> 2; // floor
-
-    // The idea of using a single shorter candidate is by Cassio Neri.
-    // It is less or equal to the upper bound by construction.
-    let shorter: UInt = upper / UInt::from(10) * UInt::from(10);
-    if shorter >= lower {
-        return ToDecimalResult {
-            sig: shorter.into() as i64,
-            exp: dec_exp,
-            last_digit: 0,
-            has_last_digit: false,
-        };
-    }
-
-    // The simplified longer candidate selection is by Russ Cox.
-    let mut dec_sig = umulhi_inexact_to_odd(pow10.hi, pow10.lo, bin_sig_shifted << exp_shift);
-    dec_sig = (dec_sig + UInt::from(1) + ((dec_sig >> 2) & UInt::from(1))) >> 2; // round
-    ToDecimalResult {
-        sig: hint::select_unpredictable(lower == upper, lower, dec_sig).into() as i64,
-        exp: dec_exp,
-        last_digit: 0,
-        has_last_digit: false,
-    }
-}
-
 // Returns x / 10 for x <= 2**62.
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn div10(x: u64) -> u64 {
@@ -1334,16 +1258,23 @@ where
                 buffer.add(3)
             };
         }
-        dec = to_decimal_schubfach(bin_sig, i64::from(1 - Float::EXP_OFFSET), true);
-        while dec.sig < threshold as i64 {
-            dec.sig *= 10;
-            dec.exp -= 1;
+        dec = to_decimal::<Float, Float::SigType>(bin_sig, 1, true, c);
+        let mut dec_sig = dec.sig * 10
+            + if dec.has_last_digit {
+                i64::from(dec.last_digit)
+            } else {
+                0
+            };
+        let mut dec_exp = dec.exp;
+        while dec_sig < threshold as i64 {
+            dec_sig *= 10;
+            dec_exp -= 1;
         }
-        let div10 = div10(dec.sig as u64);
-        let last_digit = dec.sig - div10 as i64 * 10;
+        let d = div10(dec_sig as u64);
+        let last_digit = dec_sig - d as i64 * 10;
         dec = ToDecimalResult {
-            sig: div10 as i64,
-            exp: dec.exp,
+            sig: d as i64,
+            exp: dec_exp,
             last_digit: last_digit as u8,
             has_last_digit: last_digit != 0,
         };
@@ -1352,12 +1283,11 @@ where
             bin_sig | Float::IMPLICIT_BIT,
             bin_exp,
             bin_sig != Float::SigType::from(0),
-            &CONSTS,
+            c,
         );
     }
-    let mut dec_exp = dec.exp;
     let extra_digit = dec.sig >= threshold as i64;
-    dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
+    let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
         dec.sig = 10 * dec.sig
             + if dec.has_last_digit {

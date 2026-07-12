@@ -44,26 +44,12 @@ pub trait UInt:
     + Display
 {
     type Signed: Ord;
-    fn truncate(big: u64) -> Self;
-    fn enlarge(small: u32) -> Self;
 }
 
 impl UInt for u32 {
     type Signed = i32;
-    fn truncate(big: u64) -> Self {
-        big as u32
-    }
-    fn enlarge(small: u32) -> Self {
-        small
-    }
 }
 
 impl UInt for u64 {
     type Signed = i64;
-    fn truncate(big: u64) -> Self {
-        big
-    }
-    fn enlarge(small: u32) -> Self {
-        u64::from(small)
-    }
 }

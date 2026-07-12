@@ -30,19 +30,6 @@ fn utilities() {
 }
 
 #[test]
-fn umulhi_inexact_to_odd() {
-    let pow10 = crate::POW10_SIGNIFICANDS.get(-292);
-    assert_eq!(
-        crate::umulhi_inexact_to_odd(pow10.hi, pow10.lo, 0x1234567890abcdefu64 << 1),
-        0x24554a3ce60a45f5,
-    );
-    assert_eq!(
-        crate::umulhi_inexact_to_odd(pow10.hi, pow10.lo, 0x1234567890abce16u64 << 1),
-        0x24554a3ce60a4643,
-    );
-}
-
-#[test]
 fn pow10() {
     const DEC_EXP_MIN: i32 = -292;
 
