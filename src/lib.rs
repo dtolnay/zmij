@@ -239,7 +239,7 @@ trait FloatTraits: traits::Float {
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    fn to_digits(value: u64, extra_digit: bool, c: &Constants) -> DecDigits<Self>;
+    fn to_digits(value: u64, c: &Constants) -> DecDigits<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -256,7 +256,7 @@ impl FloatTraits for f32 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    fn to_digits(value: u64, _extra_digit: bool, _c: &Constants) -> DecDigits<Self> {
+    fn to_digits(value: u64, _c: &Constants) -> DecDigits<Self> {
         to_digits_32(value)
     }
 }
@@ -283,8 +283,8 @@ impl FloatTraits for f64 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    fn to_digits(value: u64, extra_digit: bool, c: &Constants) -> DecDigits<Self> {
-        to_digits_64(value, extra_digit, c)
+    fn to_digits(value: u64, c: &Constants) -> DecDigits<Self> {
+        to_digits_64(value, c)
     }
 }
 
@@ -1052,11 +1052,7 @@ struct DecDigits<Float: FloatTraits> {
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_digits_64(
-    value: u64,
-    #[allow(unused_variables)] extra_digit: bool,
-    #[allow(unused_variables)] c: &Constants,
-) -> DecDigits<f64> {
+fn to_digits_64(value: u64, #[allow(unused_variables)] c: &Constants) -> DecDigits<f64> {
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
@@ -1363,7 +1359,7 @@ where
     }
 
     // Write significand.
-    let dig = Float::to_digits(dec.sig as u64, extra_digit, c);
+    let dig = Float::to_digits(dec.sig as u64, c);
     let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
     unsafe {
         buffer
