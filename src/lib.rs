@@ -416,6 +416,10 @@ impl Pow10SignificandTable {
         }
 
         unsafe {
+            // The caller passes `-e - 1` for its own dec_exp `e`, so `~dec_exp`
+            // (i.e. `-dec_exp - 1`) recovers `e` directly. Picking the base so
+            // that `e` itself is the right index avoids an extra add in the
+            // load.
             #[cfg_attr(
                 not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
                 allow(unused_mut)
@@ -423,19 +427,14 @@ impl Pow10SignificandTable {
             let mut hi = self
                 .data
                 .as_ptr()
-                .offset(Self::NUM_POW10S as isize + DEC_EXP_MIN as isize - 1);
-            #[cfg_attr(
-                not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
-                allow(unused_mut)
-            )]
-            let mut lo = hi.add(Self::NUM_POW10S);
+                .offset(Self::NUM_POW10S as isize + DEC_EXP_MIN as isize);
 
             // Force indexed loads.
             #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri)))]
-            asm!("/*{0}{1}*/", inout(reg) hi, inout(reg) lo);
+            asm!("/*{0}*/", inout(reg) hi);
             uint128 {
-                hi: *hi.offset(-dec_exp as isize),
-                lo: *lo.offset(-dec_exp as isize),
+                hi: *hi.offset(!(dec_exp as isize)),
+                lo: *hi.offset(!(dec_exp as isize) + Self::NUM_POW10S as isize),
             }
         }
     }
