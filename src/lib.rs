@@ -1067,24 +1067,20 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] c: &Constants) -> DecDigi
             // the mask is derived in parallel with the shuffle on the SSE4.1
             // path.
             let mask = _mm_movemask_epi8(_mm_cmpgt_epi8(bcd, _mm_setzero_si128())) as u64;
-
-            let len;
+            // Trailing zeros are in the low bits for SSE4.1, the high bits for
+            // SSE2.
+            let len = if cfg!(target_feature = "sse4.1") {
+                16 - mask.trailing_zeros()
+            } else {
+                64 - mask.leading_zeros()
+            };
 
             #[cfg(target_feature = "sse4.1")]
             {
-                // Trailing zeros are in the low bits before bswap.
-                len = 16 - (mask | (1 << 16)).trailing_zeros();
                 bcd = _mm_shuffle_epi8(
                     bcd,
                     _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>()),
                 ); // SSSE3
-            }
-
-            #[cfg(not(target_feature = "sse4.1"))]
-            {
-                // Output is already in final order; trailing zeros are in the
-                // high bits.
-                len = 63 - ((mask << 1) | 1).leading_zeros();
             }
 
             DecDigits {
