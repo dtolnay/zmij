@@ -1326,16 +1326,17 @@ where
             c,
         );
     }
+    let mut has_last_digit = dec.has_last_digit;
     let extra_digit = dec.sig >= threshold as i64;
     let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
         dec.sig = 10 * dec.sig
-            + if dec.has_last_digit {
+            + if has_last_digit {
                 i64::from(dec.last_digit)
             } else {
                 0
             };
-        dec.has_last_digit = false;
+        has_last_digit = false;
         dec_exp -= 1;
     }
 
@@ -1352,7 +1353,7 @@ where
             .write(b'0' + dec.last_digit);
     }
     let length = usize::from(extra_digit)
-        + if dec.has_last_digit {
+        + if has_last_digit {
             bcd_size + 1
         } else {
             dig.num_digits
