@@ -884,64 +884,6 @@ fn to_bcd_4x4(y: __m128i, c: &Constants) -> __m128i {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-struct Bcd2x8Result {
-    bcd: __m128i,
-    len: u32,
-}
-
-// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
-// individual BCD digits. SSE4.1 result will be in reverse order.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_bcd_2x8(bbccddee: u32, ffgghhii: u32, c: &Constants) -> Bcd2x8Result {
-    unsafe {
-        let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
-        let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
-        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
-        #[cfg_attr(target_feature = "sse4.1", allow(unused_mut))]
-        let mut y: __m128i = _mm_add_epi64(
-            x,
-            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
-        );
-
-        #[cfg(not(target_feature = "sse4.1"))]
-        {
-            // Shuffle to ensure correctly ordered result from SSE2 path.
-            y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
-        }
-
-        let bcdx4: __m128i = to_bcd_4x4(y, c);
-        let len;
-        let bcd;
-
-        #[cfg(target_feature = "sse4.1")]
-        {
-            // The length is determined from the number of trailing zeros which
-            // are in the low bits before the bswap.
-            let mask128: __m128i = _mm_cmpgt_epi8(bcdx4, _mm_setzero_si128());
-            let mask = _mm_movemask_epi8(mask128) as u64;
-            len = 16 - (mask | (1 << 16)).trailing_zeros();
-
-            let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
-            bcd = _mm_shuffle_epi8(bcdx4, bswap); // SSSE3
-        }
-
-        #[cfg(not(target_feature = "sse4.1"))]
-        {
-            bcd = bcdx4; // Output is already in final order.
-
-            // The length is determined from the number of trailing zeros which
-            // are in the high bits.
-            let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
-            let mask = _mm_movemask_epi8(mask128) as u64;
-            len = 63 - ((mask << 1) | 1).leading_zeros();
-        }
-
-        Bcd2x8Result { bcd, len }
-    }
-}
-
 struct BcdResult {
     bcd: u64,
     len: usize,
@@ -1087,10 +1029,11 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] c: &Constants) -> DecDigi
 
             let is_not_zero: uint16x8_t =
                 vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
-            let zeros: u64 = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
+            let nonzero_mask: u64 =
+                vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
             DecDigits {
                 digits: str,
-                num_digits: 16 - (zeros.leading_zeros() as usize >> 2),
+                num_digits: 16 - (nonzero_mask.leading_zeros() as usize >> 2),
             }
         }
     }
@@ -1100,12 +1043,54 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] c: &Constants) -> DecDigi
         let abbccddee = (value / 100_000_000) as u32;
         let ffgghhii = (value % 100_000_000) as u32;
 
-        let result = to_bcd_2x8(abbccddee, ffgghhii, c);
+        unsafe {
+            let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
+            let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
+            let x: __m128i = _mm_set_epi64x(i64::from(abbccddee), i64::from(ffgghhii));
+            #[cfg_attr(target_feature = "sse4.1", allow(unused_mut))]
+            let mut y: __m128i = _mm_add_epi64(
+                x,
+                _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
+            );
 
-        let zeros = unsafe { _mm_load_si128(ptr::addr_of!(c.zeros).cast::<__m128i>()) };
-        DecDigits {
-            digits: unsafe { _mm_or_si128(result.bcd, zeros) },
-            num_digits: result.len as usize,
+            // Shuffle to ensure correctly ordered result from SSE2 path.
+            #[cfg(not(target_feature = "sse4.1"))]
+            {
+                y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
+            }
+
+            let bcdx4: __m128i = to_bcd_4x4(y, c);
+            let zeros = _mm_load_si128(ptr::addr_of!(c.zeros).cast::<__m128i>());
+            let len;
+            let bcd;
+
+            #[cfg(target_feature = "sse4.1")]
+            {
+                // The length is determined from the number of trailing zeros
+                // which are in the low bits before bswap.
+                let mask128: __m128i = _mm_cmpgt_epi8(bcdx4, _mm_setzero_si128());
+                let mask = _mm_movemask_epi8(mask128) as u64;
+                len = 16 - (mask | (1 << 16)).trailing_zeros();
+
+                let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
+                bcd = _mm_shuffle_epi8(bcdx4, bswap); // SSSE3
+            }
+
+            #[cfg(not(target_feature = "sse4.1"))]
+            {
+                bcd = bcdx4; // Output is already in final order.
+
+                // The length is determined from the number of trailing zeros
+                // which are in the high bits.
+                let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
+                let mask = _mm_movemask_epi8(mask128) as u64;
+                len = 63 - ((mask << 1) | 1).leading_zeros();
+            }
+
+            DecDigits {
+                digits: _mm_or_si128(bcd, zeros),
+                num_digits: len as usize,
+            }
         }
     }
 }
