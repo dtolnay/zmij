@@ -162,17 +162,6 @@ struct uint128 {
 // Use umul128_hi64 for division.
 const USE_UMUL128_HI64: bool = cfg!(target_vendor = "apple");
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse2",
-    not(target_feature = "sse4.1"),
-    not(miri)
-))]
-#[cfg_attr(feature = "no-panic", inline)]
-fn extract_u64(v: __m128i) -> u64 {
-    (unsafe { _mm_cvtsi128_si64(v) }) as u64
-}
-
 // Computes 128-bit result of multiplication of two 64-bit unsigned integers.
 const fn umul128(x: u64, y: u64) -> u128 {
     x as u128 * y as u128
@@ -723,7 +712,7 @@ impl Data {
     }
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-    const NEG10K: i32 = -10000 + 0x10000;
+    const NEG10K: i32 = 0x10000 - 10000;
 }
 
 static STATIC_DATA: Data = Data {
@@ -989,7 +978,7 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
         let abcd_efgh = (abcdefgh << 32)
             - ((10000u64 << 32) - 1) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let v: __m128i = to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d);
-        let bcd = extract_u64(v);
+        let bcd = unsafe { _mm_cvtsi128_si64(v) } as u64;
         BcdResult {
             bcd,
             len: count_trailing_nonzeros(bcd),
