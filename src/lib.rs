@@ -253,12 +253,12 @@ trait FloatTraits: traits::Float {
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     ))]
-    unsafe fn write_scientific_float_simd(
+    unsafe fn write_exp_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
         last_digit_value: i32,
         has_last_digit: bool,
-        extra_digit: bool,
+        has_extra_digit: bool,
         exp_data: u64,
         d: &Data,
     ) -> *mut u8;
@@ -300,22 +300,22 @@ impl FloatTraits for f32 {
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     ))]
     #[inline]
-    unsafe fn write_scientific_float_simd(
+    unsafe fn write_exp_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
         last_digit_value: i32,
         has_last_digit: bool,
-        extra_digit: bool,
+        has_extra_digit: bool,
         exp_data: u64,
         d: &Data,
     ) -> *mut u8 {
         unsafe {
-            write_scientific_float_simd_32(
+            write_exp_float_simd_32(
                 buffer,
                 dig,
                 last_digit_value,
                 has_last_digit,
-                extra_digit,
+                has_extra_digit,
                 exp_data,
                 d,
             )
@@ -361,12 +361,12 @@ impl FloatTraits for f64 {
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     ))]
     #[inline]
-    unsafe fn write_scientific_float_simd(
+    unsafe fn write_exp_float_simd(
         _buffer: *mut u8,
         _dig: &DecDigits<Self>,
         _last_digit_value: i32,
         _has_last_digit: bool,
-        _extra_digit: bool,
+        _has_extra_digit: bool,
         _exp_data: u64,
         _d: &Data,
     ) -> *mut u8 {
@@ -590,7 +590,7 @@ impl ExpShiftTable {
     }
 }
 
-// An optional table of precomputed exponent strings for scientific notation.
+// An optional table of precomputed exponent strings for exponential notation.
 // Each entry packs "e+dd" or "e+ddd" into a u64 with the length in byte 7.
 struct ExpStringTable {
     data: [u64; if Self::ENABLE {
@@ -634,36 +634,39 @@ impl ExpStringTable {
     }
 }
 
-// Shuffle masks to build strings in scientific form.
+// Shuffle vectors to build strings for exponential notation.
 //
-// We store the length in the last byte of the shuffle mask as it is always past
-// the end of the string.
+// Byte positions in the source register assembled by write_exp_float_simd:
+//   bytes [0, exp_pos):              BCD ASCII digits (reversed)
+//   bytes [exp_pos, exp_pos + 4):    exponent string "e±NN"
+//   byte  last_digit_pos:            rounded last digit
+//   byte  point_pos:                 '.'
 //
-// After benchmnarking, the fastest way of indexing appears to be a flat array
-// with the index calculation done explicitly in get_index.
+// The shuffle length (max 14) is stored in byte 15; the corresponding output
+// byte is past the string and ignored by the caller.
 #[repr(C, align(16))]
-struct ScientificFloatMaskTable {
-    masks: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
+struct ExpFloatShuffleTable {
+    data: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
 }
 
 #[cfg(any(
     all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 ))]
-struct ScientificFloatMaskTableEntry {
-    mask: *const u8,
+struct ExpFloatShuffleTableEntry {
+    shuffle: *const u8,
     length: u8,
 }
 
-impl ScientificFloatMaskTable {
+impl ExpFloatShuffleTable {
     const ENABLE: bool = cfg!(any(
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     )) && ExpStringTable::ENABLE;
 
-    const fn get_index(ndigits: i32, has_last: i32, has_extra_digit: i32) -> i32 {
-        (ndigits - 1) * 4 + has_last * 2 + has_extra_digit
-    }
+    const EXP_POS: u8 = 8;
+    const LAST_DIGIT_POS: u8 = 12;
+    const POINT_POS: u8 = 13;
 
     #[cfg(any(
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
@@ -671,92 +674,78 @@ impl ScientificFloatMaskTable {
     ))]
     unsafe fn get_entry(
         &self,
-        ndigits: i32,
-        has_last: bool,
+        num_digits: i32,
+        has_last_digit: bool,
         has_extra_digit: bool,
-    ) -> ScientificFloatMaskTableEntry {
-        let idx = Self::get_index(ndigits, i32::from(has_last), i32::from(has_extra_digit));
-        ScientificFloatMaskTableEntry {
-            mask: unsafe { self.masks.as_ptr().add(idx as usize * 16) },
-            length: *unsafe { self.masks.get_unchecked(idx as usize * 16 + 15) },
+    ) -> ExpFloatShuffleTableEntry {
+        let idx = (num_digits - 1) * 4 + i32::from(has_last_digit) * 2 + i32::from(has_extra_digit);
+        ExpFloatShuffleTableEntry {
+            shuffle: unsafe { self.data.as_ptr().add(idx as usize * 16) },
+            length: *unsafe { self.data.get_unchecked(idx as usize * 16 + 15) },
         }
     }
 
     const fn new() -> Self {
-        let mut masks = [0u8; if Self::ENABLE { 32 * 16 } else { 0 }];
-        if !Self::ENABLE {
-            return ScientificFloatMaskTable { masks };
-        }
+        let mut data = [0u8; if Self::ENABLE { 32 * 16 } else { 0 }];
 
-        let mut ndigits = 1;
-        while ndigits <= 8 {
-            let mut has_last = 0;
-            while has_last < 2 {
-                let mut extra_digit = 0;
-                while extra_digit < 2 {
-                    let idx = Self::get_index(ndigits, has_last, extra_digit);
-                    let out = idx as usize * 16;
-                    let mut i = 0;
-                    while i < 16 {
-                        masks[out + i] = 0x80; // zero by default
-                        i += 1;
-                    }
+        let mut idx = 0;
+        while idx < 32 && Self::ENABLE {
+            let num_digits = (idx >> 2) + 1;
+            let has_last_digit = ((idx >> 1) & 1) != 0;
+            let has_extra_digit = (idx & 1) != 0;
 
-                    // Position of the most significant digit in the reversed
-                    // input.
-                    let msd_byte = if extra_digit != 0 { 7 } else { 6 };
-                    let mut length = 0;
-                    if has_last != 0 {
-                        // Always 8 BCD chars in the significand plus a
-                        // last-digit char; for !extra_digit the leading '0' of
-                        // the 8-digit padded BCD is shown.
-                        masks[out + length] = msd_byte;
-                        length += 1;
-                        masks[out + length] = 13; // '.'
-                        length += 1;
-                        let mut i = msd_byte - 1;
-                        loop {
-                            masks[out + length] = i;
-                            length += 1;
-                            if i == 0 {
-                                break;
-                            }
-                            i -= 1;
-                        }
-                        masks[out + length] = 12; // last_digit
-                        length += 1;
-                    } else {
-                        length = if extra_digit + ndigits == 2 {
-                            1
-                        } else {
-                            (extra_digit + ndigits) as usize
-                        };
-                        masks[out] = msd_byte;
-                        if length > 1 {
-                            masks[out + 1] = 13; // '.'
-                            let mut i = 2;
-                            while i < length {
-                                masks[out + i] = msd_byte + 1 - i as u8;
-                                i += 1;
-                            }
-                        }
-                    }
-                    // Exp string follows the significand.
-                    let mut i = 0;
-                    while i < 4 {
-                        masks[out + length] = 8 + i;
-                        length += 1;
-                        i += 1;
-                    }
-                    masks[out + 15] = length as u8;
-                    extra_digit += 1;
-                }
-                has_last += 1;
+            let out = idx * 16;
+            let mut i = 0;
+            while i < 16 {
+                data[out + i] = 0x80; // shuffle high bit: output 0
+                i += 1;
             }
-            ndigits += 1;
+            let leading_digit_pos = if has_extra_digit { 7 } else { 6 };
+            let mut length = 0;
+            if has_last_digit {
+                // Always 8 BCD chars in the significand plus a last-digit char;
+                // for !has_extra_digit the leading '0' of the 8-digit padded
+                // BCD is shown.
+                data[out + length] = leading_digit_pos;
+                length += 1;
+                data[out + length] = Self::POINT_POS;
+                length += 1;
+                let mut i = leading_digit_pos - 1;
+                loop {
+                    data[out + length] = i;
+                    length += 1;
+                    if i == 0 {
+                        break;
+                    }
+                    i -= 1;
+                }
+                data[out + length] = Self::LAST_DIGIT_POS;
+                length += 1;
+            } else {
+                length = num_digits + has_extra_digit as usize;
+                // Drop the '.' for single-digit output: "5e+02", not "5.0e+02".
+                if length == 2 {
+                    length = 1;
+                }
+                data[out] = leading_digit_pos;
+                data[out + 1] = Self::POINT_POS;
+                let mut i = 2;
+                while i < length {
+                    data[out + i] = leading_digit_pos + 1 - i as u8;
+                    i += 1;
+                }
+            }
+            let mut i = 0;
+            while i < 4 {
+                data[out + length] = Self::EXP_POS + i;
+                length += 1;
+                i += 1;
+            }
+            data[out + 15] = length as u8;
+            idx += 1;
         }
 
-        ScientificFloatMaskTable { masks }
+        ExpFloatShuffleTable { data }
     }
 }
 
@@ -889,7 +878,7 @@ struct Data {
     exp_shifts: ExpShiftTable,
     exp_strings: ExpStringTable,
     pow10_significands: Pow10SignificandTable,
-    scientific_float_masks: ScientificFloatMaskTable,
+    exp_float_shuffles: ExpFloatShuffleTable,
 }
 
 impl Data {
@@ -981,7 +970,7 @@ static STATIC_DATA: Data = Data {
     exp_shifts: ExpShiftTable::new(),
     exp_strings: ExpStringTable::new(),
     pow10_significands: Pow10SignificandTable::new(),
-    scientific_float_masks: ScientificFloatMaskTable::new(),
+    exp_float_shuffles: ExpFloatShuffleTable::new(),
 };
 
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
@@ -1153,8 +1142,7 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
 
 // For the SIMD paths with shuffle operations (SSE4.1, NEON) we keep the
 // byte-reversed ("unshuffled") SIMD result, as we use it to put together the
-// full string in the SIMD register for output with exponents (scientific
-// style).
+// full string in the SIMD register for output in exponential notation.
 struct DecDigits<Float: FloatTraits> {
     digits: Float::DecDigitsType,
     #[cfg_attr(
@@ -1275,7 +1263,7 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     {
         // Inline to_bcd8's SSE4.1 body so we can return the unshuffled xmm too;
-        // the scientific-notation path uses it to skip the bswap-via-gpr.
+        // the exponential-notation path uses it to skip the bswap-via-gpr.
         let abcd_efgh = value + u64::from(NEG10K) * ((value * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let bcd_xmm = to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d);
         let unshuffled_bcd = unsafe { _mm_cvtsi128_si64(bcd_xmm) } as u64;
@@ -1294,7 +1282,7 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // Inline to_bcd8's NEON body so we can return the unshuffled vector
-        // too; the scientific-notation path uses it to skip the
+        // too; the exponential-notation path uses it to skip the
         // simd->gpr->bswap->simd roundtrip needed to materialize `digits`.
         let abcd_efgh = value + u64::from(NEG10K) * ((value * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let unshuffled: uint8x16_t = unsafe {
@@ -1335,20 +1323,24 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 ))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn write_scientific_float_simd_32(
+unsafe fn write_exp_float_simd_32(
     buffer: *mut u8,
     dig: &DecDigits<f32>,
     last_digit_value: i32,
     has_last_digit: bool,
-    extra_digit: bool,
+    has_extra_digit: bool,
     exp_data: u64,
     d: &Data,
 ) -> *mut u8 {
+    // Pack the upper 8 bytes of the source register per the layout documented
+    // on exp_float_shuffle_table: exp string at bytes 8..11, last digit at 12,
+    // '.' at 13. The shifts here position prefix bytes into hi_qword such that
+    // _mm_insert_epi64(..., 1) lands them at register bytes 12 and 13.
     let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit_value as u32;
     let hi_qword = (exp_data & 0xFFFFFFFF) | (u64::from(prefix) << 32);
     let m = unsafe {
-        d.scientific_float_masks
-            .get_entry(dig.num_digits as i32, has_last_digit, extra_digit)
+        d.exp_float_shuffles
+            .get_entry(dig.num_digits as i32, has_last_digit, has_extra_digit)
     };
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
@@ -1358,8 +1350,8 @@ unsafe fn write_scientific_float_simd_32(
             _mm_load_si128(ptr::addr_of!(d.zeros).cast::<__m128i>()),
         );
         let src: __m128i = _mm_insert_epi64(ascii, hi_qword as i64, 1);
-        let mask: __m128i = _mm_load_si128(m.mask.cast::<__m128i>());
-        let out: __m128i = _mm_shuffle_epi8(src, mask);
+        let shuffle: __m128i = _mm_load_si128(m.shuffle.cast::<__m128i>());
+        let out: __m128i = _mm_shuffle_epi8(src, shuffle);
         _mm_storeu_si128(buffer.cast::<__m128i>(), out);
     }
 
@@ -1369,8 +1361,8 @@ unsafe fn write_scientific_float_simd_32(
         let src: uint8x16_t =
             vreinterpretq_u8_u64(vsetq_lane_u64(hi_qword, vreinterpretq_u64_u8(ascii), 1));
 
-        let mask: uint8x16_t = vld1q_u8(m.mask);
-        let out: uint8x16_t = vqtbl1q_u8(src, mask);
+        let shuffle: uint8x16_t = vld1q_u8(m.shuffle);
+        let out: uint8x16_t = vqtbl1q_u8(src, shuffle);
         vst1q_u8(buffer, out);
     }
 
@@ -1593,8 +1585,8 @@ where
         );
     }
     let mut has_last_digit = dec.has_last_digit;
-    let extra_digit = dec.sig >= threshold as i64;
-    let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
+    let has_extra_digit = dec.sig >= threshold as i64;
+    let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(has_extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
         dec.sig = 10 * dec.sig + (-i64::from(has_last_digit) & i64::from(dec.last_digit));
         has_last_digit = false;
@@ -1610,7 +1602,7 @@ where
     ))]
     {
         if Float::NUM_BITS == 32
-            && ScientificFloatMaskTable::ENABLE
+            && ExpFloatShuffleTable::ENABLE
             && !Float::FIXED_DEC_EXP.contains(&dec_exp)
         {
             unsafe {
@@ -1618,12 +1610,12 @@ where
                     .exp_strings
                     .data
                     .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize);
-                return Float::write_scientific_float_simd(
+                return Float::write_exp_float_simd(
                     buffer,
                     &dig,
                     i32::from(dec.last_digit),
                     has_last_digit,
-                    extra_digit,
+                    has_extra_digit,
                     exp_data,
                     d,
                 );
@@ -1634,14 +1626,14 @@ where
     let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
     unsafe {
         buffer
-            .add(usize::from(extra_digit))
+            .add(usize::from(has_extra_digit))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
         buffer
-            .add(usize::from(extra_digit) + bcd_size)
+            .add(usize::from(has_extra_digit) + bcd_size)
             .write(b'0' + dec.last_digit);
     }
-    let length = usize::from(extra_digit)
+    let length = usize::from(has_extra_digit)
         + if has_last_digit {
             bcd_size + 1
         } else {
