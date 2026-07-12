@@ -221,12 +221,7 @@ trait FloatTraits: traits::Float {
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    unsafe fn to_digits(
-        buffer: *mut u8,
-        value: u64,
-        extra_digit: bool,
-        c: &Constants,
-    ) -> DecDigits<Self>;
+    fn to_digits(value: u64, extra_digit: bool, c: &Constants) -> DecDigits<Self>;
 }
 
 impl FloatTraits for f32 {
@@ -243,13 +238,8 @@ impl FloatTraits for f32 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(
-        buffer: *mut u8,
-        value: u64,
-        extra_digit: bool,
-        _c: &Constants,
-    ) -> DecDigits<Self> {
-        unsafe { to_digits_32(buffer, value, extra_digit) }
+    fn to_digits(value: u64, _extra_digit: bool, _c: &Constants) -> DecDigits<Self> {
+        to_digits_32(value)
     }
 }
 
@@ -275,13 +265,8 @@ impl FloatTraits for f64 {
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    unsafe fn to_digits(
-        buffer: *mut u8,
-        value: u64,
-        extra_digit: bool,
-        c: &Constants,
-    ) -> DecDigits<Self> {
-        unsafe { to_digits_64(buffer, value, extra_digit, c) }
+    fn to_digits(value: u64, extra_digit: bool, c: &Constants) -> DecDigits<Self> {
+        to_digits_64(value, extra_digit, c)
     }
 }
 
@@ -629,14 +614,6 @@ const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
 const NEG10: u32 = (1 << 8) - 10;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
-
-#[cfg_attr(feature = "no-panic", inline)]
-unsafe fn write_if(buffer: *mut u8, digit: u32, condition: bool) -> *mut u8 {
-    unsafe {
-        *buffer = b'0' + digit as u8;
-        buffer.add(usize::from(condition))
-    }
-}
 
 #[repr(C, align(64))]
 struct Constants {
@@ -1009,8 +986,7 @@ struct DecDigits<Float: FloatTraits> {
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_digits_64(
-    #[allow(unused_variables)] buffer: *mut u8,
+fn to_digits_64(
     value: u64,
     #[allow(unused_variables)] extra_digit: bool,
     #[allow(unused_variables)] c: &Constants,
@@ -1088,11 +1064,8 @@ unsafe fn to_digits_64(
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-unsafe fn to_digits_32(buffer: *mut u8, value: u64, extra_digit: bool) -> DecDigits<f32> {
-    unsafe {
-        write_if(buffer, (value / 100_000_000) as u32, extra_digit);
-    }
-    let result = to_bcd8(value % 100_000_000);
+fn to_digits_32(value: u64) -> DecDigits<f32> {
+    let result = to_bcd8(value);
     DecDigits {
         digits: result.bcd + ZEROS,
         num_digits: result.len,
@@ -1218,22 +1191,11 @@ where
         if digit < lo {
             digit = lo;
         }
-        if num_bits == 64 {
-            return ToDecimalResult {
-                sig: integral as i64,
-                exp: dec_exp,
-                last_digit: digit as u8,
-                has_last_digit: !(round_up || round_down),
-            };
-        }
-        if round_up || round_down {
-            digit = 0;
-        }
         return ToDecimalResult {
-            sig: integral as i64 * 10 + i64::from(digit),
+            sig: integral as i64,
             exp: dec_exp,
-            last_digit: 0,
-            has_last_digit: false,
+            last_digit: digit as u8,
+            has_last_digit: !(round_up || round_down),
         };
     }
 
@@ -1258,14 +1220,11 @@ where
             rem > (1u64 << (EXTRA_SHIFT - 1))
                 || (rem == (1u64 << (EXTRA_SHIFT - 1)) && (digit & 1) != 0),
         );
-        if round_up || round_down {
-            digit = 0;
-        }
         return ToDecimalResult {
-            sig: integral as i64 * 10 + i64::from(digit),
+            sig: integral as i64,
             exp: dec_exp,
-            last_digit: 0,
-            has_last_digit: false,
+            last_digit: digit as u8,
+            has_last_digit: !(round_up || round_down),
         };
     }
 
@@ -1363,7 +1322,7 @@ where
     let threshold = if Float::NUM_BITS == 64 {
         c.threshold
     } else {
-        100_000_000
+        10_000_000
     };
     if bin_exp == 0 {
         if bin_sig == Float::SigType::from(0) {
@@ -1379,12 +1338,14 @@ where
             dec.sig *= 10;
             dec.exp -= 1;
         }
-        if Float::NUM_BITS == 64 {
-            let div10 = div10(dec.sig as u64);
-            dec.last_digit = (dec.sig - div10 as i64 * 10) as u8;
-            dec.has_last_digit = dec.last_digit != 0;
-            dec.sig = div10 as i64;
-        }
+        let div10 = div10(dec.sig as u64);
+        let last_digit = dec.sig - div10 as i64 * 10;
+        dec = ToDecimalResult {
+            sig: div10 as i64,
+            exp: dec.exp,
+            last_digit: last_digit as u8,
+            has_last_digit: last_digit != 0,
+        };
     } else {
         dec = to_decimal::<Float, Float::SigType>(
             bin_sig | Float::IMPLICIT_BIT,
@@ -1396,15 +1357,21 @@ where
     let mut dec_exp = dec.exp;
     let extra_digit = dec.sig >= threshold as i64;
     dec_exp += Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
-    if Float::NUM_BITS == 32 && dec.sig < 10_000_000 {
-        dec.sig *= 10;
+    if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
+        dec.sig = 10 * dec.sig
+            + if dec.has_last_digit {
+                i64::from(dec.last_digit)
+            } else {
+                0
+            };
+        dec.has_last_digit = false;
         dec_exp -= 1;
     }
 
+    let dig = Float::to_digits(dec.sig as u64, extra_digit, c);
     let length = unsafe {
-        let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit, c);
         buffer
-            .add(usize::from(extra_digit) + usize::from(Float::NUM_BITS != 64))
+            .add(usize::from(extra_digit))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
         if Float::NUM_BITS == 64 {
@@ -1419,7 +1386,16 @@ where
                 }
                 - 1
         } else {
-            usize::from(extra_digit) + dig.num_digits
+            buffer
+                .add(usize::from(extra_digit) + 8)
+                .write(b'0' + dec.last_digit);
+            usize::from(extra_digit)
+                + if dec.has_last_digit {
+                    9
+                } else {
+                    dig.num_digits
+                }
+                - 1
         }
     };
 
