@@ -1000,20 +1000,19 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
     {
-        // Digits/pairs of digits are denoted by letters: value = bbccddeeffgghhii.
-        let bbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
-        let hi = to_bcd8(bbccddee as u64);
-        if ffgghhii == 0 {
+        let hi = (value / 100_000_000) as u32;
+        let lo = (value % 100_000_000) as u32;
+        let hi_bcd = to_bcd8(hi as u64);
+        if lo == 0 {
             return DecDigits {
-                digits: [hi.bcd + ZEROS, ZEROS],
-                num_digits: hi.len,
+                digits: [hi_bcd.bcd + ZEROS, ZEROS],
+                num_digits: hi_bcd.len,
             };
         }
-        let lo = to_bcd8(ffgghhii as u64);
+        let lo_bcd = to_bcd8(lo as u64);
         DecDigits {
-            digits: [hi.bcd + ZEROS, lo.bcd + ZEROS],
-            num_digits: 8 + lo.len,
+            digits: [hi_bcd.bcd + ZEROS, lo_bcd.bcd + ZEROS],
+            num_digits: 8 + lo_bcd.len,
         }
     }
 
@@ -1026,7 +1025,6 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
                 vreinterpretq_u16_u8(digits),
                 vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
             );
-
             let is_not_zero: uint16x8_t =
                 vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
             let nonzero_mask: u64 =
@@ -1040,13 +1038,13 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     {
-        let abbccddee = (value / 100_000_000) as u32;
-        let ffgghhii = (value % 100_000_000) as u32;
+        let hi = (value / 100_000_000) as u32;
+        let lo = (value % 100_000_000) as u32;
 
         unsafe {
             let div10k = _mm_load_si128(ptr::addr_of!(d.div10k).cast::<__m128i>());
             let neg10k = _mm_load_si128(ptr::addr_of!(d.neg10k).cast::<__m128i>());
-            let x: __m128i = _mm_set_epi64x(i64::from(abbccddee), i64::from(ffgghhii));
+            let x: __m128i = _mm_set_epi64x(i64::from(hi), i64::from(lo));
             #[cfg_attr(target_feature = "sse4.1", allow(unused_mut))]
             let mut y: __m128i = _mm_add_epi64(
                 x,
