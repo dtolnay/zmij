@@ -1060,22 +1060,36 @@ fn to_digits_64(
         unsafe {
             let zeros = _mm_load_si128(ptr::addr_of!(c.zeros).cast::<__m128i>());
             let unshuffled_bcd = to_unshuffled_digits(abbccddee, ffgghhii, c);
-            #[cfg(target_feature = "sse4.1")]
-            let bcd = {
-                let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
-                // SSSE3
-                _mm_shuffle_epi8(unshuffled_bcd, bswap)
-            };
-            #[cfg(not(target_feature = "sse4.1"))]
-            let bcd = _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3));
 
-            // Count leading zeros.
-            let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
-            let mask = _mm_movemask_epi8(mask128) as u32;
-            let len = 32 - mask.leading_zeros() as usize;
-            DecDigits {
-                digits: _mm_or_si128(bcd, zeros),
-                num_digits: len,
+            #[cfg(target_feature = "sse4.1")]
+            {
+                // The length is determined from the number of trailing zeros
+                // which are in the low bits before the bswap.
+                let mask128: __m128i = _mm_cmpgt_epi8(unshuffled_bcd, _mm_setzero_si128());
+                let mask = _mm_movemask_epi8(mask128) as u64;
+                let len = 16 - (mask | (1 << 16)).trailing_zeros();
+
+                let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
+                let bcd = _mm_shuffle_epi8(unshuffled_bcd, bswap); // SSSE3
+                DecDigits {
+                    digits: _mm_or_si128(bcd, zeros),
+                    num_digits: len as usize,
+                }
+            }
+
+            #[cfg(not(target_feature = "sse4.1"))]
+            {
+                let bcd = _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3));
+
+                // The length is determined from the number of trailing zeros
+                // which are in the high bits.
+                let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
+                let mask = _mm_movemask_epi8(mask128) as u64;
+                let len = 63 - ((mask << 1) | 1).leading_zeros();
+                DecDigits {
+                    digits: _mm_or_si128(bcd, zeros),
+                    num_digits: len as usize,
+                }
             }
         }
     }
