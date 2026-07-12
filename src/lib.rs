@@ -171,13 +171,13 @@ const fn umul128(x: u64, y: u64) -> u128 {
     x as u128 * y as u128
 }
 
-#[cfg_attr(feature = "no-panic", inline)]
+#[inline]
 const fn umul128_hi64(x: u64, y: u64) -> u64 {
     (umul128(x, y) >> 64) as u64
 }
 
 // Returns (x * y + c) >> 64.
-#[cfg_attr(feature = "no-panic", inline)]
+#[cfg_attr(feature = "no-panic", no_panic)]
 fn umul128_add_hi64(x: u64, y: u64, c: u64) -> u64 {
     ((u128::from(x) * u128::from(y) + u128::from(c)) >> 64) as u64
 }
@@ -285,12 +285,12 @@ impl FloatTraits for f32 {
     )))]
     type DecUnshuffledType = (); // unused
 
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
     }
 
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
         to_digits_32(value, d)
     }
@@ -299,7 +299,7 @@ impl FloatTraits for f32 {
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     ))]
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     unsafe fn write_scientific_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
@@ -344,12 +344,12 @@ impl FloatTraits for f64 {
 
     type DecUnshuffledType = ();
 
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
     }
 
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
         to_digits_64(value, d)
     }
@@ -360,7 +360,7 @@ impl FloatTraits for f64 {
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     ))]
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     unsafe fn write_scientific_float_simd(
         _buffer: *mut u8,
         _dig: &DecDigits<Self>,
@@ -439,7 +439,7 @@ impl Pow10SignificandTable {
     const NUM_POW10S: usize = 618;
 
     // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     const fn compute(i: u32) -> uint128 {
         const STRIDE: u32 = POW10_MINOR.len() as u32;
         let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 10) % STRIDE) as usize) };
@@ -487,7 +487,7 @@ impl Pow10SignificandTable {
         Pow10SignificandTable { data }
     }
 
-    #[cfg_attr(feature = "no-panic", inline)]
+    #[inline]
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
         const DEC_EXP_MIN: i32 = -293;
         let i = dec_exp - DEC_EXP_MIN;
