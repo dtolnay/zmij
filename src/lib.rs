@@ -1179,13 +1179,10 @@ where
         let round_down = half_ulp > fractional;
         integral += u64::from(round_up);
 
-        let prod = fractional.wrapping_mul(10);
-        let mut digit = (prod >> EXTRA_SHIFT) as i32;
-        let rem = prod & ((1u64 << EXTRA_SHIFT) - 1);
-        digit += i32::from(
-            rem > (1u64 << (EXTRA_SHIFT - 1))
-                || (rem == (1u64 << (EXTRA_SHIFT - 1)) && (digit & 1) != 0),
-        );
+        let mut digit = ((fractional * 10 + (1u64 << (EXTRA_SHIFT - 1))) >> EXTRA_SHIFT) as i32;
+        if fractional == (1u64 << (EXTRA_SHIFT - 2)) {
+            digit = 2; // Round 2.5 to 2.
+        }
         return ToDecimalResult {
             sig: integral as i64,
             exp: dec_exp,
