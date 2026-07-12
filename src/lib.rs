@@ -122,8 +122,8 @@ const NAN: &str = "NaN";
 const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 
-// Used to declare struct members that should live in memory for ARM64 but
-// should be implemented as immediates in the x64 assembly.
+// Declares struct members that must live in memory on ARM64 but are encoded as
+// immediates in the x64 assembly.
 struct AArch64Mem<const VALUE: u64> {
     #[cfg(target_arch = "aarch64")]
     value: u64,
