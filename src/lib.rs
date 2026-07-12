@@ -228,6 +228,11 @@ trait FloatTraits: traits::Float {
     const IMPLICIT_BIT: Self::SigType;
 
     type DecDigitsType: Copy;
+
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    ))]
     type DecUnshuffledType;
 
     fn to_bits(self) -> Self::SigType;
@@ -249,14 +254,10 @@ trait FloatTraits: traits::Float {
     // for normals) for f32.
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self>;
 
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
     unsafe fn write_exp_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
-        last_digit_value: i32,
+        last_digit: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
         exp_data: u64,
@@ -275,15 +276,10 @@ impl FloatTraits for f32 {
 
     type DecDigitsType = u64;
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
-    type DecUnshuffledType = __m128i;
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     type DecUnshuffledType = uint8x16_t;
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    )))]
-    type DecUnshuffledType = (); // unused
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    type DecUnshuffledType = __m128i;
 
     #[inline]
     fn to_bits(self) -> Self::SigType {
@@ -295,15 +291,11 @@ impl FloatTraits for f32 {
         to_digits_32(value, d)
     }
 
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
     #[inline]
     unsafe fn write_exp_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
-        last_digit_value: i32,
+        last_digit: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
         exp_data: u64,
@@ -313,7 +305,7 @@ impl FloatTraits for f32 {
             write_exp_float_simd_32(
                 buffer,
                 dig,
-                last_digit_value,
+                last_digit,
                 has_last_digit,
                 has_extra_digit,
                 exp_data,
@@ -342,6 +334,10 @@ impl FloatTraits for f64 {
     )))]
     type DecDigitsType = [u64; 2];
 
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    ))]
     type DecUnshuffledType = ();
 
     #[inline]
@@ -354,17 +350,11 @@ impl FloatTraits for f64 {
         to_digits_64(value, d)
     }
 
-    // Dummy overload so write::<f64> instantiates cleanly. The runtime guard
-    // `Float::NUM_BITS == 32` in `write` folds this call away.
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
     #[inline]
     unsafe fn write_exp_float_simd(
         _buffer: *mut u8,
         _dig: &DecDigits<Self>,
-        _last_digit_value: i32,
+        _last_digit: i32,
         _has_last_digit: bool,
         _has_extra_digit: bool,
         _exp_data: u64,
@@ -649,11 +639,14 @@ struct ExpFloatShuffleTable {
     data: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
 }
 
-#[cfg(any(
-    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-))]
 struct ExpFloatShuffleTableEntry {
+    #[cfg_attr(
+        not(any(
+            all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+            all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        )),
+        allow(dead_code)
+    )]
     shuffle: *const u8,
     length: u8,
 }
@@ -668,10 +661,6 @@ impl ExpFloatShuffleTable {
     const LAST_DIGIT_POS: u8 = 12;
     const POINT_POS: u8 = 13;
 
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
     unsafe fn get_entry(
         &self,
         num_digits: i32,
@@ -1140,18 +1129,13 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
     }
 }
 
-// For the SIMD paths with shuffle operations (SSE4.1, NEON) we keep the
-// byte-reversed ("unshuffled") SIMD result, as we use it to put together the
-// full string in the SIMD register for output in exponential notation.
 struct DecDigits<Float: FloatTraits> {
     digits: Float::DecDigitsType,
-    #[cfg_attr(
-        not(any(
-            all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-            all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-        )),
-        allow(dead_code)
-    )]
+    // `unshuffled` is the byte-reversed BCD vector used by write_exp_float_simd.
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    ))]
     unshuffled: Float::DecUnshuffledType,
     num_digits: usize,
 }
@@ -1170,14 +1154,12 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
         if lo == 0 {
             return DecDigits {
                 digits: [hi_bcd.bcd + ZEROS, ZEROS],
-                unshuffled: (),
                 num_digits: hi_bcd.len,
             };
         }
         let lo_bcd = to_bcd8(lo as u64);
         DecDigits {
             digits: [hi_bcd.bcd + ZEROS, lo_bcd.bcd + ZEROS],
-            unshuffled: (),
             num_digits: 8 + lo_bcd.len,
         }
     }
@@ -1250,6 +1232,7 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
 
             DecDigits {
                 digits: _mm_or_si128(bcd, zeros),
+                #[cfg(target_feature = "sse4.1")]
                 unshuffled: (),
                 num_digits: len as usize,
             }
@@ -1312,33 +1295,35 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
         let result = to_bcd8(value);
         DecDigits {
             digits: result.bcd + ZEROS,
-            unshuffled: (),
             num_digits: result.len,
         }
     }
 }
 
-#[cfg(any(
-    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 unsafe fn write_exp_float_simd_32(
     buffer: *mut u8,
     dig: &DecDigits<f32>,
-    last_digit_value: i32,
+    last_digit: i32,
     has_last_digit: bool,
     has_extra_digit: bool,
     exp_data: u64,
     d: &Data,
 ) -> *mut u8 {
-    // Pack the upper 8 bytes of the source register per the layout documented
-    // on exp_float_shuffle_table: exp string at bytes 8..11, last digit at 12,
-    // '.' at 13. The shifts here position prefix bytes into hi_qword such that
-    // _mm_insert_epi64(..., 1) lands them at register bytes 12 and 13.
-    let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit_value as u32;
-    let hi_qword = (exp_data & 0xFFFFFFFF) | (u64::from(prefix) << 32);
-    let m = unsafe {
+    // Packed for insertion into lane 1: byte 0 of `tail` lands at register byte
+    // exp_pos (8), so the exp string fills exp_pos..exp_pos+3; the prefix
+    // shifts place '0'+last_digit at last_digit_pos (12) and '.' at point_pos
+    // (13).
+    let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit as u32;
+    #[cfg_attr(
+        not(any(
+            all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+            all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        )),
+        allow(unused_variables)
+    )]
+    let tail = exp_data | (u64::from(prefix) << 32);
+    let entry = unsafe {
         d.exp_float_shuffles
             .get_entry(dig.num_digits as i32, has_last_digit, has_extra_digit)
     };
@@ -1349,8 +1334,8 @@ unsafe fn write_exp_float_simd_32(
             dig.unshuffled,
             _mm_load_si128(ptr::addr_of!(d.zeros).cast::<__m128i>()),
         );
-        let src: __m128i = _mm_insert_epi64(ascii, hi_qword as i64, 1);
-        let shuffle: __m128i = _mm_load_si128(m.shuffle.cast::<__m128i>());
+        let src: __m128i = _mm_insert_epi64(ascii, tail as i64, 1);
+        let shuffle: __m128i = _mm_load_si128(entry.shuffle.cast::<__m128i>());
         let out: __m128i = _mm_shuffle_epi8(src, shuffle);
         _mm_storeu_si128(buffer.cast::<__m128i>(), out);
     }
@@ -1359,14 +1344,13 @@ unsafe fn write_exp_float_simd_32(
     unsafe {
         let ascii: uint8x16_t = vorrq_u8(dig.unshuffled, vdupq_n_u8(b'0'));
         let src: uint8x16_t =
-            vreinterpretq_u8_u64(vsetq_lane_u64(hi_qword, vreinterpretq_u64_u8(ascii), 1));
-
-        let shuffle: uint8x16_t = vld1q_u8(m.shuffle);
+            vreinterpretq_u8_u64(vsetq_lane_u64(tail, vreinterpretq_u64_u8(ascii), 1));
+        let shuffle: uint8x16_t = vld1q_u8(entry.shuffle);
         let out: uint8x16_t = vqtbl1q_u8(src, shuffle);
         vst1q_u8(buffer, out);
     }
 
-    let length = m.length as usize - usize::from((exp_data & 0xff000000) == 0);
+    let length = entry.length as usize - usize::from((exp_data & 0xff000000) == 0);
     unsafe { buffer.add(length) }
 }
 
@@ -1596,30 +1580,24 @@ where
     // Write significand.
     let dig = Float::to_digits(dec.sig as u64, d);
 
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
+    if Float::NUM_BITS == 32
+        && ExpFloatShuffleTable::ENABLE
+        && !Float::FIXED_DEC_EXP.contains(&dec_exp)
     {
-        if Float::NUM_BITS == 32
-            && ExpFloatShuffleTable::ENABLE
-            && !Float::FIXED_DEC_EXP.contains(&dec_exp)
-        {
-            unsafe {
-                let exp_data = *d
-                    .exp_strings
-                    .data
-                    .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize);
-                return Float::write_exp_float_simd(
-                    buffer,
-                    &dig,
-                    i32::from(dec.last_digit),
-                    has_last_digit,
-                    has_extra_digit,
-                    exp_data,
-                    d,
-                );
-            }
+        unsafe {
+            let exp_data = *d
+                .exp_strings
+                .data
+                .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize);
+            return Float::write_exp_float_simd(
+                buffer,
+                &dig,
+                i32::from(dec.last_digit),
+                has_last_digit,
+                has_extra_digit,
+                exp_data,
+                d,
+            );
         }
     }
 
