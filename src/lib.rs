@@ -1156,6 +1156,7 @@ where
         compute_dec_exp(bin_exp as i32, true)
     };
     #[cfg(not(miri))]
+    #[allow(unused_unsafe)]
     unsafe {
         // Force 32-bit reg for sxtw addressing.
         #[cfg(target_arch = "x86_64")]
@@ -1264,11 +1265,11 @@ where
     }
     buffer = unsafe { buffer.add(usize::from(Float::is_negative(bits))) };
 
-    #[cfg_attr(miri, allow(unused_mut))]
+    #[allow(unused_mut)]
     let mut d = ptr::addr_of!(STATIC_DATA);
     let d = unsafe {
         // Load constants from memory.
-        #[cfg(not(miri))]
+        #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
         asm!("/*{0}*/", inout(reg) d);
         &*d
     };
