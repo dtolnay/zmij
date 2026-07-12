@@ -3,9 +3,9 @@ use core::mem;
 use num_bigint::BigUint as Uint;
 
 const _: () = {
-    let static_data = mem::size_of_val(&crate::CONSTS.pow10_significands)
-        + mem::size_of_val(&crate::CONSTS.exp_shifts)
-        + mem::size_of_val(&crate::CONSTS.exp_strings)
+    let static_data = mem::size_of_val(&crate::STATIC_DATA.pow10_significands)
+        + mem::size_of_val(&crate::STATIC_DATA.exp_shifts)
+        + mem::size_of_val(&crate::STATIC_DATA.exp_strings)
         + mem::size_of_val(&crate::DIGITS2);
     if cfg!(opt_level = "s") {
         assert!(static_data == 200);
@@ -56,7 +56,9 @@ fn pow10() {
         let lo = u64::try_from(result & (Uint::from(2_u8).pow(64) - Uint::from(1_u8))).unwrap();
         if !crate::Pow10SignificandTable::COMPRESS {
             assert_eq!(
-                crate::CONSTS.pow10_significands.get(DEC_EXP_MIN + i as i32),
+                crate::STATIC_DATA
+                    .pow10_significands
+                    .get(DEC_EXP_MIN + i as i32),
                 crate::uint128 { hi, lo },
             );
         }
