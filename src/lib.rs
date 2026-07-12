@@ -1159,7 +1159,15 @@ where
 
     if num_bits == 32 {
         const EXTRA_SHIFT: usize = 34;
-        let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
+        let shift = if ExpShiftTable::ENABLE {
+            (usize::from(*unsafe {
+                d.exp_shifts
+                    .data
+                    .get_unchecked((bin_exp + i64::from(f64::EXP_OFFSET)) as usize)
+            }) + (EXTRA_SHIFT - ExpShiftTable::EXTRA_SHIFT)) as u8
+        } else {
+            compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
+        };
         let pow10_hi = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) }.hi;
         let p = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
 
