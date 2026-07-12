@@ -1059,31 +1059,31 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] c: &Constants) -> DecDigi
                 y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
             }
 
-            let bcdx4: __m128i = to_bcd_4x4(y, c);
+            #[cfg_attr(not(target_feature = "sse4.1"), allow(unused_mut))]
+            let mut bcd: __m128i = to_bcd_4x4(y, c);
             let zeros = _mm_load_si128(ptr::addr_of!(c.zeros).cast::<__m128i>());
+
+            // Computed against current bcd (rather than the post-bswap bcd) so
+            // the mask is derived in parallel with the shuffle on the SSE4.1
+            // path.
+            let mask = _mm_movemask_epi8(_mm_cmpgt_epi8(bcd, _mm_setzero_si128())) as u64;
+
             let len;
-            let bcd;
 
             #[cfg(target_feature = "sse4.1")]
             {
-                // The length is determined from the number of trailing zeros
-                // which are in the low bits before bswap.
-                let mask128: __m128i = _mm_cmpgt_epi8(bcdx4, _mm_setzero_si128());
-                let mask = _mm_movemask_epi8(mask128) as u64;
+                // Trailing zeros are in the low bits before bswap.
                 len = 16 - (mask | (1 << 16)).trailing_zeros();
-
-                let bswap = _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>());
-                bcd = _mm_shuffle_epi8(bcdx4, bswap); // SSSE3
+                bcd = _mm_shuffle_epi8(
+                    bcd,
+                    _mm_load_si128(ptr::addr_of!(c.bswap).cast::<__m128i>()),
+                ); // SSSE3
             }
 
             #[cfg(not(target_feature = "sse4.1"))]
             {
-                bcd = bcdx4; // Output is already in final order.
-
-                // The length is determined from the number of trailing zeros
-                // which are in the high bits.
-                let mask128: __m128i = _mm_cmpgt_epi8(bcd, _mm_setzero_si128());
-                let mask = _mm_movemask_epi8(mask128) as u64;
+                // Output is already in final order; trailing zeros are in the
+                // high bits.
                 len = 63 - ((mask << 1) | 1).leading_zeros();
             }
 
