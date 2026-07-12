@@ -122,6 +122,34 @@ const NAN: &str = "NaN";
 const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 
+// Used to declare struct members that should live in memory for ARM64 but
+// should be implemented as immediates in the x64 assembly.
+struct AArch64Mem<const VALUE: u64> {
+    #[cfg(target_arch = "aarch64")]
+    value: u64,
+}
+
+impl<const VALUE: u64> AArch64Mem<VALUE> {
+    const fn new() -> Self {
+        AArch64Mem {
+            #[cfg(target_arch = "aarch64")]
+            value: VALUE,
+        }
+    }
+
+    const fn get(&self) -> u64 {
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.value
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            VALUE
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 struct uint128 {
@@ -603,9 +631,9 @@ const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
 #[repr(C, align(64))]
 struct Constants {
-    threshold: u64,
+    threshold: AArch64Mem<1_000_000_000_000_000>,
     // +6 is needed for boundary cases found by verify.py.
-    biased_half: u64,
+    biased_half: AArch64Mem<{ (1 << 63) + 6 }>,
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: u64,
@@ -685,8 +713,8 @@ impl Constants {
 }
 
 static CONSTS: Constants = Constants {
-    threshold: 1_000_000_000_000_000,
-    biased_half: (1 << 63) + 6,
+    threshold: AArch64Mem::new(),
+    biased_half: AArch64Mem::new(),
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: 0xabcc77118461cefd,
@@ -1206,7 +1234,7 @@ where
     integral += u64::from(round_up); // Compute integral before digit.
 
     // Derive the extra digit from the fractional part (parallel with rounding).
-    let mut digit = umul128_add_hi64(fractional, 10, c.biased_half) as i32;
+    let mut digit = umul128_add_hi64(fractional, 10, c.biased_half.get()) as i32;
     if fractional == (1u64 << 62) {
         digit = 2; // Round 2.5 to 2.
     }
@@ -1244,7 +1272,7 @@ where
         &*c
     };
     let threshold = if Float::NUM_BITS == 64 {
-        c.threshold
+        c.threshold.get()
     } else {
         10_000_000
     };
