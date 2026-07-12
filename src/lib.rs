@@ -158,6 +158,15 @@ fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     }
 }
 
+// Returns x / 10 for x <= 2**62.
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn div10(x: u64) -> u64 {
+    debug_assert!(x < (1 << 62));
+    // ceil(2**64 / 10) computed as (1 << 63) / 5 + 1 to avoid int128.
+    const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
+    umul128_hi64(x, DIV10_SIG64)
+}
+
 // Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
 // floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
 const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
@@ -1058,15 +1067,6 @@ struct ToDecimalResult {
     exp: i32,
     last_digit: u8,
     has_last_digit: bool,
-}
-
-// Returns x / 10 for x <= 2**62.
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn div10(x: u64) -> u64 {
-    debug_assert!(x < (1 << 62));
-    // ceil(2**64 / 10) computed as (1 << 63) / 5 + 1 to avoid int128.
-    const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
-    umul128_hi64(x, DIV10_SIG64)
 }
 
 // Here be 🐉s.
