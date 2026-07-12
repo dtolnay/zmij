@@ -1299,12 +1299,8 @@ where
             };
         }
         dec = to_decimal::<Float, Float::SigType>(bin_sig, 1, true, c);
-        let mut dec_sig = dec.sig * 10
-            + if dec.has_last_digit {
-                i64::from(dec.last_digit)
-            } else {
-                0
-            };
+        let mut dec_sig =
+            dec.sig * 10 + (-i64::from(dec.has_last_digit) & i64::from(dec.last_digit));
         let mut dec_exp = dec.exp;
         while dec_sig < threshold as i64 {
             dec_sig *= 10;
@@ -1330,12 +1326,7 @@ where
     let extra_digit = dec.sig >= threshold as i64;
     let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
-        dec.sig = 10 * dec.sig
-            + if has_last_digit {
-                i64::from(dec.last_digit)
-            } else {
-                0
-            };
+        dec.sig = 10 * dec.sig + (-i64::from(has_last_digit) & i64::from(dec.last_digit));
         has_last_digit = false;
         dec_exp -= 1;
     }
