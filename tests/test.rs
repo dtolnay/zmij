@@ -106,6 +106,7 @@ mod dtoa_test {
         assert_eq!(dtoa(43210.0), "43210.0");
         assert_eq!(dtoa(43210.1), "43210.1");
         assert_eq!(dtoa(10000.0), "10000.0");
+        assert_eq!(dtoa(-5942736479622170.0), "-5942736479622170.0");
     }
 
     #[test]
