@@ -777,7 +777,7 @@ static CONSTS: Constants = Constants {
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &Constants) -> uint8x16_t {
+fn to_bcd_4x4(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &Constants) -> uint8x16_t {
     unsafe {
         // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
         // MUL.
@@ -841,14 +841,14 @@ fn to_unshuffled_digits(value: u64, c: &Constants) -> uint8x16_t {
         let ddee_bbcc_hhii_ffgg: int32x4_t =
             vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
 
-        to_digits_4x4digits(ddee_bbcc_hhii_ffgg, c)
+        to_bcd_4x4(ddee_bbcc_hhii_ffgg, c)
     }
 }
 
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_digits_4x4digits(y: __m128i, c: &Constants) -> __m128i {
+fn to_bcd_4x4(y: __m128i, c: &Constants) -> __m128i {
     unsafe {
         let div100 = _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>());
         let div10 = _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>());
@@ -895,7 +895,7 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i 
             x,
             _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
         );
-        to_digits_4x4digits(y, c)
+        to_bcd_4x4(y, c)
     }
 }
 
@@ -955,7 +955,7 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
                 vreinterpret_s32_u64(vcreate_u64(abcd_efgh_64)),
                 vdup_n_s32(0),
             );
-            let digits_128: uint8x16_t = to_digits_4x4digits(abcd_efgh, c);
+            let digits_128: uint8x16_t = to_bcd_4x4(abcd_efgh, c);
             let digits: uint8x8_t = vget_low_u8(digits_128);
             vget_lane_u64(vreinterpret_u64_u8(vrev64_u8(digits)), 0)
         };
@@ -969,9 +969,8 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
     {
         let abcd_efgh =
             abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let unshuffled_bcd = unsafe {
-            _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
-        } as u64;
+        let unshuffled_bcd =
+            unsafe { _mm_cvtsi128_si64(to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), c)) } as u64;
         let len = if unshuffled_bcd != 0 {
             8 - unshuffled_bcd.trailing_zeros() / 8
         } else {
@@ -994,9 +993,8 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
         // result which is in the correct order.
         let abcd_efgh = (abcdefgh << 32)
             - ((10000u64 << 32) - 1) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let bcd = unsafe {
-            _mm_cvtsi128_si64(to_digits_4x4digits(_mm_set_epi64x(0, abcd_efgh as i64), c))
-        } as u64;
+        let bcd =
+            unsafe { _mm_cvtsi128_si64(to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), c)) } as u64;
         BcdResult {
             bcd,
             len: count_trailing_nonzeros(bcd),
