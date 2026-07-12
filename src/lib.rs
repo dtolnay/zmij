@@ -1209,22 +1209,12 @@ where
         let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
         let half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
-        let down_half_ulp = half_ulp >> 1;
         let round_up = half_ulp > u64::MAX - fractional;
-        let round_down = down_half_ulp > fractional;
+        let round_down = (half_ulp >> 1) > fractional;
         integral += u64::from(round_up);
 
-        let rem = fractional.wrapping_mul(10);
-        let mut digit = umul128_hi64(fractional, 10) as i32;
-        // Lower midpoint of the asymmetric interval in digit space.
-        let lo_frac = fractional.wrapping_sub(down_half_ulp);
-        let lo = umul128_add_hi64(lo_frac, 10, !0) as i32;
-        const HALF: u64 = 1 << 63;
-        digit += if rem == HALF {
-            digit & 1
-        } else {
-            i32::from(rem.wrapping_add(HALF) < rem)
-        };
+        let mut digit = umul128_add_hi64(fractional, 10, (1 << 63) - 1) as i32;
+        let lo = umul128_add_hi64(fractional.wrapping_sub(half_ulp >> 1), 10, !0) as i32;
         if digit < lo {
             digit = lo;
         }
