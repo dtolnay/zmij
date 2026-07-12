@@ -775,60 +775,6 @@ static CONSTS: Constants = Constants {
 };
 
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_digits_4x4digits(y: __m128i, c: &Constants) -> __m128i {
-    unsafe {
-        let div100 = _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>());
-        let div10 = _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>());
-
-        #[cfg(target_feature = "sse4.1")]
-        {
-            let neg100 = _mm_load_si128(ptr::addr_of!(c.neg100).cast::<__m128i>());
-            let neg10 = _mm_load_si128(ptr::addr_of!(c.neg10).cast::<__m128i>());
-
-            // _mm_mullo_epi32 is SSE 4.1
-            let z: __m128i = _mm_add_epi64(
-                y,
-                _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
-            );
-            _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)))
-        }
-
-        #[cfg(not(target_feature = "sse4.1"))]
-        {
-            let hundred = _mm_load_si128(ptr::addr_of!(c.hundred).cast::<__m128i>());
-            let moddiv10 = _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>());
-
-            let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
-            let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
-            let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
-            _mm_sub_epi16(
-                _mm_slli_epi16(z, 8),
-                _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
-            )
-        }
-    }
-}
-
-// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
-// individual BCD digits in SIMD lane order (caller must shuffle).
-#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i {
-    unsafe {
-        let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
-        let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
-        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
-        let y: __m128i = _mm_add_epi64(
-            x,
-            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
-        );
-        to_digits_4x4digits(y, c)
-    }
-}
-
-// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_digits_4x4digits(mut ddee_bbcc_hhii_ffgg: int32x4_t, c: &Constants) -> uint8x16_t {
@@ -896,6 +842,60 @@ fn to_unshuffled_digits(value: u64, c: &Constants) -> uint8x16_t {
             vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
 
         to_digits_4x4digits(ddee_bbcc_hhii_ffgg, c)
+    }
+}
+
+// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_digits_4x4digits(y: __m128i, c: &Constants) -> __m128i {
+    unsafe {
+        let div100 = _mm_load_si128(ptr::addr_of!(c.div100).cast::<__m128i>());
+        let div10 = _mm_load_si128(ptr::addr_of!(c.div10).cast::<__m128i>());
+
+        #[cfg(target_feature = "sse4.1")]
+        {
+            let neg100 = _mm_load_si128(ptr::addr_of!(c.neg100).cast::<__m128i>());
+            let neg10 = _mm_load_si128(ptr::addr_of!(c.neg10).cast::<__m128i>());
+
+            // _mm_mullo_epi32 is SSE 4.1
+            let z: __m128i = _mm_add_epi64(
+                y,
+                _mm_mullo_epi32(neg100, _mm_srli_epi32(_mm_mulhi_epu16(y, div100), 3)),
+            );
+            _mm_add_epi64(z, _mm_mullo_epi16(neg10, _mm_mulhi_epu16(z, div10)))
+        }
+
+        #[cfg(not(target_feature = "sse4.1"))]
+        {
+            let hundred = _mm_load_si128(ptr::addr_of!(c.hundred).cast::<__m128i>());
+            let moddiv10 = _mm_load_si128(ptr::addr_of!(c.moddiv10).cast::<__m128i>());
+
+            let y_div_100: __m128i = _mm_srli_epi16(_mm_mulhi_epu16(y, div100), 3);
+            let y_mod_100: __m128i = _mm_sub_epi16(y, _mm_mullo_epi16(y_div_100, hundred));
+            let z: __m128i = _mm_or_si128(_mm_slli_epi32(y_mod_100, 16), y_div_100);
+            _mm_sub_epi16(
+                _mm_slli_epi16(z, 8),
+                _mm_mullo_epi16(moddiv10, _mm_mulhi_epu16(z, div10)),
+            )
+        }
+    }
+}
+
+// SSE parallel version of to_bcd8: converts bbccddee and ffgghhii into
+// individual BCD digits in SIMD lane order (caller must shuffle).
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i {
+    unsafe {
+        let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
+        let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
+        let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
+        let y: __m128i = _mm_add_epi64(
+            x,
+            _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
+        );
+        to_digits_4x4digits(y, c)
     }
 }
 
