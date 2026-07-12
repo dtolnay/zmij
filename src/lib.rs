@@ -1241,14 +1241,13 @@ where
         asm!("/*{0}*/", inout(reg) c);
         &*c
     };
-
-    let mut dec;
     let threshold = if Float::NUM_BITS == 64 {
         c.threshold
     } else {
         10_000_000
     };
-    let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
+
+    let mut dec;
     if bin_exp == 0 {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
@@ -1301,6 +1300,7 @@ where
 
     // Write significand.
     let dig = Float::to_digits(dec.sig as u64, extra_digit, c);
+    let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
     unsafe {
         buffer
             .add(usize::from(extra_digit))
