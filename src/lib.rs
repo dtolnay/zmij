@@ -1324,6 +1324,7 @@ where
     } else {
         10_000_000
     };
+    let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
     if bin_exp == 0 {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
@@ -1369,35 +1370,22 @@ where
     }
 
     let dig = Float::to_digits(dec.sig as u64, extra_digit, c);
-    let length = unsafe {
+    unsafe {
         buffer
             .add(usize::from(extra_digit))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
-        if Float::NUM_BITS == 64 {
-            buffer
-                .add(usize::from(extra_digit) + 16)
-                .write(b'0' + dec.last_digit);
-            usize::from(extra_digit)
-                + if dec.has_last_digit {
-                    17
-                } else {
-                    dig.num_digits
-                }
-                - 1
+        buffer
+            .add(usize::from(extra_digit) + bcd_size)
+            .write(b'0' + dec.last_digit);
+    }
+    let length = usize::from(extra_digit)
+        + if dec.has_last_digit {
+            bcd_size + 1
         } else {
-            buffer
-                .add(usize::from(extra_digit) + 8)
-                .write(b'0' + dec.last_digit);
-            usize::from(extra_digit)
-                + if dec.has_last_digit {
-                    9
-                } else {
-                    dig.num_digits
-                }
-                - 1
+            dig.num_digits
         }
-    };
+        - 1;
 
     if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
         || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
