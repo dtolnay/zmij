@@ -778,27 +778,27 @@ static STATIC_DATA: Data = Data {
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn to_bcd_4x4(mut ddee_bbcc_hhii_ffgg: int32x4_t, d: &Data) -> uint8x16_t {
+fn to_bcd_4x4(mut efgh_abcd_mnop_ijkl: int32x4_t, d: &Data) -> uint8x16_t {
     unsafe {
         // Compiler barrier, or clang breaks the subsequent MLA into UADDW +
         // MUL.
-        asm!("/*{:v}*/", inout(vreg) ddee_bbcc_hhii_ffgg);
+        asm!("/*{:v}*/", inout(vreg) efgh_abcd_mnop_ijkl);
 
-        let dd_bb_hh_ff: int32x4_t = vqdmulhq_n_s32(
-            ddee_bbcc_hhii_ffgg,
+        let ef_ab_mn_ij: int32x4_t = vqdmulhq_n_s32(
+            efgh_abcd_mnop_ijkl,
             mem::transmute::<int32x4_t, [i32; 4]>(d.multipliers32)[2],
         );
-        let ee_dd_cc_bb_ii_hh_gg_ff: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
-            ddee_bbcc_hhii_ffgg,
-            dd_bb_hh_ff,
+        let gh_ef_cd_ab_op_mn_kl_ij: int16x8_t = vreinterpretq_s16_s32(vmlaq_n_s32(
+            efgh_abcd_mnop_ijkl,
+            ef_ab_mn_ij,
             mem::transmute::<int32x4_t, [i32; 4]>(d.multipliers32)[3],
         ));
         let high_10s: int16x8_t = vqdmulhq_n_s16(
-            ee_dd_cc_bb_ii_hh_gg_ff,
+            gh_ef_cd_ab_op_mn_kl_ij,
             mem::transmute::<int16x8_t, [i16; 8]>(d.multipliers16)[0],
         );
         vreinterpretq_u8_s16(vmlaq_n_s16(
-            ee_dd_cc_bb_ii_hh_gg_ff,
+            gh_ef_cd_ab_op_mn_kl_ij,
             high_10s,
             mem::transmute::<int16x8_t, [i16; 8]>(d.multipliers16)[1],
         ))
@@ -817,32 +817,32 @@ fn to_unshuffled_digits(value: u64, d: &Data) -> uint8x16_t {
         asm!("/*{0}*/", inout(reg) hundred_million);
     }
 
-    // Equivalent to abbccddee = value / 100000000, ffgghhii = value % 100000000.
-    let abbccddee = (umul128(value, d.mul_const) >> 90) as u64;
-    let ffgghhii = value - abbccddee * hundred_million;
+    // abcdefgh = value / 100000000, ijklmnop = value % 100000000.
+    let abcdefgh = (umul128(value, d.mul_const) >> 90) as u64;
+    let ijklmnop = value - abcdefgh * hundred_million;
 
     unsafe {
-        let ffgghhii_bbccddee_64: uint64x1_t =
-            mem::transmute::<u64, uint64x1_t>((ffgghhii << 32) | abbccddee);
-        let bbccddee_ffgghhii: int32x2_t = vreinterpret_s32_u64(ffgghhii_bbccddee_64);
+        let ijklmnop_abcdefgh_64: uint64x1_t =
+            mem::transmute::<u64, uint64x1_t>((ijklmnop << 32) | abcdefgh);
+        let abcdefgh_ijklmnop: int32x2_t = vreinterpret_s32_u64(ijklmnop_abcdefgh_64);
 
-        let bbcc_ffgg: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
+        let abcd_ijkl: int32x2_t = vreinterpret_s32_u32(vshr_n_u32(
             vreinterpret_u32_s32(vqdmulh_n_s32(
-                bbccddee_ffgghhii,
+                abcdefgh_ijklmnop,
                 mem::transmute::<int32x4_t, [i32; 4]>(d.multipliers32)[0],
             )),
             9,
         ));
-        let ddee_bbcc_hhii_ffgg_32: int32x2_t = vmla_n_s32(
-            bbccddee_ffgghhii,
-            bbcc_ffgg,
+        let efgh_abcd_mnop_ijkl_32: int32x2_t = vmla_n_s32(
+            abcdefgh_ijklmnop,
+            abcd_ijkl,
             mem::transmute::<int32x4_t, [i32; 4]>(d.multipliers32)[1],
         );
 
-        let ddee_bbcc_hhii_ffgg: int32x4_t =
-            vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(ddee_bbcc_hhii_ffgg_32), 0));
+        let efgh_abcd_mnop_ijkl: int32x4_t =
+            vreinterpretq_s32_u32(vshll_n_u16(vreinterpret_u16_s32(efgh_abcd_mnop_ijkl_32), 0));
 
-        to_bcd_4x4(ddee_bbcc_hhii_ffgg, d)
+        to_bcd_4x4(efgh_abcd_mnop_ijkl, d)
     }
 }
 
