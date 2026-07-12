@@ -775,7 +775,7 @@ static STATIC_DATA: Data = Data {
     pow10_significands: Pow10SignificandTable::new(),
 };
 
-// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
+// Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd_4x4(mut ddee_bbcc_hhii_ffgg: int32x4_t, d: &Data) -> uint8x16_t {
@@ -846,8 +846,8 @@ fn to_unshuffled_digits(value: u64, d: &Data) -> uint8x16_t {
     }
 }
 
-// Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
-// Digits in each 32bit lane will be in order for SSE2, reversed for SSE4.1.
+// Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
+// Digits in each 32-bit lane will be in order for SSE2, reversed for SSE4.1.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd_4x4(y: __m128i, d: &Data) -> __m128i {
