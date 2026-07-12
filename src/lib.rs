@@ -53,6 +53,7 @@
     clippy::doc_markdown,
     clippy::incompatible_msrv,
     clippy::items_after_statements,
+    clippy::manual_ilog2,
     clippy::many_single_char_names,
     clippy::modulo_one,
     clippy::must_use_candidate,
