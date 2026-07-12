@@ -1425,7 +1425,7 @@ where
     buffer = unsafe { buffer.add(length + usize::from(length > 1)) };
 
     // Write exponent.
-    if ExpStringTable::ENABLE && Float::NUM_BITS == 64 {
+    if ExpStringTable::ENABLE {
         let mut exp_data = unsafe {
             *EXP_STRINGS
                 .data
