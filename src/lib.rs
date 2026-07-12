@@ -888,10 +888,17 @@ fn to_unshuffled_digits(bbccddee: u32, ffgghhii: u32, c: &Constants) -> __m128i 
         let div10k = _mm_load_si128(ptr::addr_of!(c.div10k).cast::<__m128i>());
         let neg10k = _mm_load_si128(ptr::addr_of!(c.neg10k).cast::<__m128i>());
         let x: __m128i = _mm_set_epi64x(i64::from(bbccddee), i64::from(ffgghhii));
-        let y: __m128i = _mm_add_epi64(
+        #[cfg_attr(target_feature = "sse4.1", allow(unused_mut))]
+        let mut y: __m128i = _mm_add_epi64(
             x,
             _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
         );
+
+        #[cfg(not(target_feature = "sse4.1"))]
+        {
+            // Shuffle to ensure correctly ordered result from SSE2 path.
+            y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
+        }
         to_bcd_4x4(y, c)
     }
 }
@@ -1080,7 +1087,7 @@ fn to_digits_64(
 
             #[cfg(not(target_feature = "sse4.1"))]
             {
-                let bcd = _mm_shuffle_epi32(unshuffled_bcd, _MM_SHUFFLE(0, 1, 2, 3));
+                let bcd = unshuffled_bcd; // Output is already in final order.
 
                 // The length is determined from the number of trailing zeros
                 // which are in the high bits.
