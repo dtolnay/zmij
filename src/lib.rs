@@ -112,6 +112,7 @@ use core::arch::aarch64::{
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 use core::mem::{self, MaybeUninit};
+use core::ops::RangeInclusive;
 use core::ptr;
 use core::slice;
 use core::str;
@@ -210,6 +211,9 @@ const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
 }
 
 trait FloatTraits: traits::Float {
+    // Note: Rust port uses wider fixed-notation ranges than upstream.
+    const FIXED_DEC_EXP: RangeInclusive<i32>;
+
     const NUM_BITS: i32;
     const NUM_SIG_BITS: i32 = Self::MANTISSA_DIGITS as i32 - 1;
     const NUM_EXP_BITS: i32 = Self::NUM_BITS - Self::NUM_SIG_BITS - 1;
@@ -243,6 +247,9 @@ trait FloatTraits: traits::Float {
 }
 
 impl FloatTraits for f32 {
+    // Upstream uses -4..=6.
+    const FIXED_DEC_EXP: RangeInclusive<i32> = -6..=12;
+
     const NUM_BITS: i32 = 32;
     const IMPLICIT_BIT: u32 = 1 << Self::NUM_SIG_BITS;
 
@@ -262,6 +269,9 @@ impl FloatTraits for f32 {
 }
 
 impl FloatTraits for f64 {
+    // Upstream uses -4..=15.
+    const FIXED_DEC_EXP: RangeInclusive<i32> = -5..=15;
+
     const NUM_BITS: i32 = 64;
     const IMPLICIT_BIT: u64 = 1 << Self::NUM_SIG_BITS;
 
@@ -1339,11 +1349,7 @@ where
         }
         - 1;
 
-    // Wider fixed-notation ranges than upstream. Upstream uses -4..=6 for float
-    // and -4..=15 for double.
-    if Float::NUM_BITS == 32 && (-6..=12).contains(&dec_exp)
-        || Float::NUM_BITS == 64 && (-5..=15).contains(&dec_exp)
-    {
+    if Float::FIXED_DEC_EXP.contains(&dec_exp) {
         if length as i32 - 1 <= dec_exp {
             // 1234e7 -> 12340000000.0
             return unsafe {
