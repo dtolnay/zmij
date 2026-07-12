@@ -1368,8 +1368,8 @@ where
         dec.has_last_digit = false;
         dec_exp -= 1;
     }
-
     let dig = Float::to_digits(dec.sig as u64, extra_digit, c);
+
     unsafe {
         buffer
             .add(usize::from(extra_digit))
