@@ -409,8 +409,6 @@ impl Pow10SignificandTable {
     }
 }
 
-static POW10_SIGNIFICANDS: Pow10SignificandTable = Pow10SignificandTable::new();
-
 // Computes a shift so that, after scaling by a power of 10, the intermediate
 // result always has a fixed 128-bit fractional part (for double).
 //
@@ -641,6 +639,8 @@ struct Constants {
     neg10k: u128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: u128,
+
+    pow10_significands: Pow10SignificandTable,
 }
 
 impl Constants {
@@ -728,6 +728,8 @@ static CONSTS: Constants = Constants {
     neg10k: Constants::splat64(NEG10K as u64),
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: Constants::splat64(ZEROS),
+
+    pow10_significands: Pow10SignificandTable::new(),
 };
 
 // Converts four numbers < 10000, one in each 32bit lane, to BCD digits.
@@ -1099,7 +1101,7 @@ where
     if !regular {
         let dec_exp = compute_dec_exp(bin_exp as i32, false);
         let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
-        let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
+        let pow10 = unsafe { c.pow10_significands.get_unchecked(-dec_exp - 1) };
         let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
         let mut integral = p.hi >> EXTRA_SHIFT;
@@ -1126,7 +1128,7 @@ where
     if num_bits == 32 {
         const EXTRA_SHIFT: usize = 34;
         let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
-        let pow10_hi = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) }.hi;
+        let pow10_hi = unsafe { c.pow10_significands.get_unchecked(-dec_exp - 1) }.hi;
         let p = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
 
         let mut integral = p >> EXTRA_SHIFT;
@@ -1192,7 +1194,7 @@ where
         #[cfg(target_arch = "aarch64")]
         asm!("/*{0:w}*/", inout(reg) dec_exp);
     }
-    let pow10 = unsafe { POW10_SIGNIFICANDS.get_unchecked(-dec_exp - 1) };
+    let pow10 = unsafe { c.pow10_significands.get_unchecked(-dec_exp - 1) };
     let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
     let mut integral = p.hi >> EXTRA_SHIFT;
