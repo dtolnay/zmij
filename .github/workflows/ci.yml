@@ -36,6 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{matrix.rust}}
+          targets: wasm32-unknown-unknown
       - name: Enable type layout randomization
         run: echo RUSTFLAGS=${RUSTFLAGS}\ -Zrandomize-layout >> $GITHUB_ENV
         if: matrix.rust == 'nightly'
@@ -46,6 +47,7 @@ jobs:
         if: matrix.rust != '1.71.0'
       - run: cargo test --release
         if: matrix.rust != '1.71.0'
+      - run: cargo check --target=wasm32-unknown-unknown
       - run: cargo check
         env:
           RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
@@ -68,6 +70,7 @@ jobs:
         if: matrix.rust != '1.71.0'
       - run: cargo --config='profile.release.opt-level="s"' test --release
         if: matrix.rust != '1.71.0'
+      - run: cargo --config='profile.release.opt-level="s"' check --target=wasm32-unknown-unknown
       - uses: actions/upload-artifact@v7
         if: matrix.rust == 'nightly' && matrix.arch == 'x86_64' && matrix.os == 'ubuntu' && always()
         with:
