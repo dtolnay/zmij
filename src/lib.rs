@@ -1118,16 +1118,6 @@ where
 {
     let bin_exp = raw_exp - i64::from(Float::EXP_OFFSET);
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
-
-    const LOG10_2_SIG: u64 = 78_913;
-    const LOG10_2_EXP: i32 = 18;
-    #[allow(unused_mut)]
-    let mut dec_exp = if USE_UMUL128_HI64 {
-        umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
-    } else {
-        compute_dec_exp(bin_exp as i32, true)
-    };
-    let even = UInt::from(1) - (bin_sig & UInt::from(1));
     const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
 
     if !regular {
@@ -1157,17 +1147,36 @@ where
         };
     }
 
+    const LOG10_2_SIG: u64 = 78_913;
+    const LOG10_2_EXP: i32 = 18;
+    #[allow(unused_mut)]
+    let mut dec_exp = if USE_UMUL128_HI64 {
+        umul128_hi64(bin_exp as u64, LOG10_2_SIG << (64 - LOG10_2_EXP)) as i32
+    } else {
+        compute_dec_exp(bin_exp as i32, true)
+    };
+    #[cfg(not(miri))]
+    unsafe {
+        // Force 32-bit reg for sxtw addressing.
+        #[cfg(target_arch = "x86_64")]
+        asm!("/*{0:e}*/", inout(reg) dec_exp);
+        #[cfg(target_arch = "aarch64")]
+        asm!("/*{0:w}*/", inout(reg) dec_exp);
+    }
+    let mut shift = if ExpShiftTable::ENABLE {
+        *unsafe {
+            d.exp_shifts
+                .data
+                .get_unchecked((bin_exp + i64::from(f64::EXP_OFFSET)) as usize)
+        }
+    } else {
+        compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
+    };
+    let even = UInt::from(1) - (bin_sig & UInt::from(1));
+
     if num_bits == 32 {
         const EXTRA_SHIFT: usize = 34;
-        let shift = if ExpShiftTable::ENABLE {
-            (usize::from(*unsafe {
-                d.exp_shifts
-                    .data
-                    .get_unchecked((bin_exp + i64::from(f64::EXP_OFFSET)) as usize)
-            }) + (EXTRA_SHIFT - ExpShiftTable::EXTRA_SHIFT)) as u8
-        } else {
-            compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
-        };
+        shift += (EXTRA_SHIFT - ExpShiftTable::EXTRA_SHIFT) as u8;
         let pow10_hi = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) }.hi;
         let p = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
 
@@ -1214,23 +1223,6 @@ where
     //
     // s - shorter underestimate, S - shorter overestimate
     // l - longer underestimate,  L - longer overestimate
-    let shift = if ExpShiftTable::ENABLE {
-        *unsafe {
-            d.exp_shifts
-                .data
-                .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
-        }
-    } else {
-        compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
-    };
-    #[cfg(not(miri))]
-    unsafe {
-        // Force 32-bit reg for sxtw addressing.
-        #[cfg(target_arch = "x86_64")]
-        asm!("/*{0:e}*/", inout(reg) dec_exp);
-        #[cfg(target_arch = "aarch64")]
-        asm!("/*{0:w}*/", inout(reg) dec_exp);
-    }
     let pow10 = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) };
     let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
