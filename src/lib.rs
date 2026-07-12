@@ -409,9 +409,10 @@ impl Pow10SignificandTable {
             return Self::compute(i as u32);
         }
         if !Self::SPLIT_TABLES {
+            let p = unsafe { self.data.as_ptr().add((i * 2) as usize) };
             return uint128 {
-                hi: unsafe { *self.data.get_unchecked((i * 2) as usize) },
-                lo: unsafe { *self.data.get_unchecked((i * 2 + 1) as usize) },
+                hi: unsafe { *p },
+                lo: unsafe { *p.add(1) },
             };
         }
 
