@@ -137,6 +137,7 @@ impl<const VALUE: u64> AArch64Mem<VALUE> {
         }
     }
 
+    #[cfg_attr(not(target_arch = "aarch64"), allow(clippy::unused_self))]
     const fn get(&self) -> u64 {
         #[cfg(target_arch = "aarch64")]
         {
