@@ -88,7 +88,9 @@ use crate::stdarch_x86::{
     target_feature = "sse4.1",
     not(miri)
 ))]
-use crate::stdarch_x86::{_mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32};
+use crate::stdarch_x86::{
+    _mm_insert_epi64, _mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128,
+};
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "sse2",
@@ -101,13 +103,14 @@ use crate::stdarch_x86::{
 use crate::traits::Float as _;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 use core::arch::aarch64::{
-    int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, uint8x8_t, vaddq_u16,
-    vcgtzq_s8, vcombine_s32, vcreate_u64, vdup_n_s32, vdupq_n_s8, vget_lane_u64, vget_low_u8,
-    vmla_n_s32, vmlaq_n_s16, vmlaq_n_s32, vqdmulh_n_s32, vqdmulhq_n_s16, vqdmulhq_n_s32,
-    vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32, vreinterpret_u32_s32,
-    vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32, vreinterpretq_s8_u8,
-    vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u8_s16, vrev64_u8, vrev64q_u8,
-    vshll_n_u16, vshr_n_u32, vshrn_n_u16,
+    int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, vaddq_u16, vcgtzq_s8,
+    vcombine_s32, vcreate_u64, vdup_n_s32, vdupq_n_s8, vdupq_n_u8, vget_lane_u64, vget_low_u8,
+    vld1q_u8, vmla_n_s32, vmlaq_n_s16, vmlaq_n_s32, vorrq_u8, vqdmulh_n_s32, vqdmulhq_n_s16,
+    vqdmulhq_n_s32, vqtbl1q_u8, vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32,
+    vreinterpret_u32_s32, vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32,
+    vreinterpretq_s8_u8, vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u64_u8,
+    vreinterpretq_u8_s16, vreinterpretq_u8_u64, vrev64q_u8, vsetq_lane_u64, vshll_n_u16,
+    vshr_n_u32, vshrn_n_u16, vst1q_u8,
 };
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
@@ -224,7 +227,8 @@ trait FloatTraits: traits::Float {
     type SigType: traits::UInt;
     const IMPLICIT_BIT: Self::SigType;
 
-    type DecDigitsType;
+    type DecDigitsType: Copy;
+    type DecUnshuffledType;
 
     fn to_bits(self) -> Self::SigType;
 
@@ -244,6 +248,20 @@ trait FloatTraits: traits::Float {
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self>;
+
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    unsafe fn write_scientific_float_simd(
+        buffer: *mut u8,
+        dig: &DecDigits<Self>,
+        last_digit_value: i32,
+        has_last_digit: bool,
+        extra_digit: bool,
+        exp_data: u64,
+        d: &Data,
+    ) -> *mut u8;
 }
 
 impl FloatTraits for f32 {
@@ -257,14 +275,51 @@ impl FloatTraits for f32 {
 
     type DecDigitsType = u64;
 
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    type DecUnshuffledType = __m128i;
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    type DecUnshuffledType = uint8x16_t;
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    )))]
+    type DecUnshuffledType = (); // unused
+
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
     }
 
     #[cfg_attr(feature = "no-panic", inline)]
-    fn to_digits(value: u64, _d: &Data) -> DecDigits<Self> {
-        to_digits_32(value)
+    fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
+        to_digits_32(value, d)
+    }
+
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    #[cfg_attr(feature = "no-panic", inline)]
+    unsafe fn write_scientific_float_simd(
+        buffer: *mut u8,
+        dig: &DecDigits<Self>,
+        last_digit_value: i32,
+        has_last_digit: bool,
+        extra_digit: bool,
+        exp_data: u64,
+        d: &Data,
+    ) -> *mut u8 {
+        unsafe {
+            write_scientific_float_simd_32(
+                buffer,
+                dig,
+                last_digit_value,
+                has_last_digit,
+                extra_digit,
+                exp_data,
+                d,
+            )
+        }
     }
 }
 
@@ -287,6 +342,8 @@ impl FloatTraits for f64 {
     )))]
     type DecDigitsType = [u64; 2];
 
+    type DecUnshuffledType = ();
+
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_bits(self) -> Self::SigType {
         self.to_bits()
@@ -295,6 +352,25 @@ impl FloatTraits for f64 {
     #[cfg_attr(feature = "no-panic", inline)]
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
         to_digits_64(value, d)
+    }
+
+    // Dummy overload so write::<f64> instantiates cleanly. The runtime guard
+    // `Float::NUM_BITS == 32` in `write` folds this call away.
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    #[cfg_attr(feature = "no-panic", inline)]
+    unsafe fn write_scientific_float_simd(
+        _buffer: *mut u8,
+        _dig: &DecDigits<Self>,
+        _last_digit_value: i32,
+        _has_last_digit: bool,
+        _extra_digit: bool,
+        _exp_data: u64,
+        _d: &Data,
+    ) -> *mut u8 {
+        ptr::null_mut()
     }
 }
 
@@ -558,12 +634,136 @@ impl ExpStringTable {
     }
 }
 
+// Shuffle masks to build strings in scientific form.
+//
+// We store the length in the last byte of the shuffle mask as it is always past
+// the end of the string.
+//
+// After benchmnarking, the fastest way of indexing appears to be a flat array
+// with the index calculation done explicitly in get_index.
+#[repr(C, align(16))]
+struct ScientificFloatMaskTable {
+    masks: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
+}
+
 #[cfg(any(
-    not(all(
-        target_arch = "x86_64",
-        target_feature = "sse2",
-        target_feature = "sse4.1",
-        not(miri)
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+))]
+struct ScientificFloatMaskTableEntry {
+    mask: *const u8,
+    length: u8,
+}
+
+impl ScientificFloatMaskTable {
+    const ENABLE: bool = cfg!(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    )) && ExpStringTable::ENABLE;
+
+    const fn get_index(ndigits: i32, has_last: i32, has_extra_digit: i32) -> i32 {
+        (ndigits - 1) * 4 + has_last * 2 + has_extra_digit
+    }
+
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    unsafe fn get_entry(
+        &self,
+        ndigits: i32,
+        has_last: bool,
+        has_extra_digit: bool,
+    ) -> ScientificFloatMaskTableEntry {
+        let idx = Self::get_index(ndigits, i32::from(has_last), i32::from(has_extra_digit));
+        ScientificFloatMaskTableEntry {
+            mask: unsafe { self.masks.as_ptr().add(idx as usize * 16) },
+            length: *unsafe { self.masks.get_unchecked(idx as usize * 16 + 15) },
+        }
+    }
+
+    const fn new() -> Self {
+        let mut masks = [0u8; if Self::ENABLE { 32 * 16 } else { 0 }];
+        if !Self::ENABLE {
+            return ScientificFloatMaskTable { masks };
+        }
+
+        let mut ndigits = 1;
+        while ndigits <= 8 {
+            let mut has_last = 0;
+            while has_last < 2 {
+                let mut extra_digit = 0;
+                while extra_digit < 2 {
+                    let idx = Self::get_index(ndigits, has_last, extra_digit);
+                    let out = idx as usize * 16;
+                    let mut i = 0;
+                    while i < 16 {
+                        masks[out + i] = 0x80; // zero by default
+                        i += 1;
+                    }
+
+                    // Position of the most significant digit in the reversed
+                    // input.
+                    let msd_byte = if extra_digit != 0 { 7 } else { 6 };
+                    let mut length = 0;
+                    if has_last != 0 {
+                        // Always 8 BCD chars in the significand plus a
+                        // last-digit char; for !extra_digit the leading '0' of
+                        // the 8-digit padded BCD is shown.
+                        masks[out + length] = msd_byte;
+                        length += 1;
+                        masks[out + length] = 13; // '.'
+                        length += 1;
+                        let mut i = msd_byte - 1;
+                        loop {
+                            masks[out + length] = i;
+                            length += 1;
+                            if i == 0 {
+                                break;
+                            }
+                            i -= 1;
+                        }
+                        masks[out + length] = 12; // last_digit
+                        length += 1;
+                    } else {
+                        length = if extra_digit + ndigits == 2 {
+                            1
+                        } else {
+                            (extra_digit + ndigits) as usize
+                        };
+                        masks[out] = msd_byte;
+                        if length > 1 {
+                            masks[out + 1] = 13; // '.'
+                            let mut i = 2;
+                            while i < length {
+                                masks[out + i] = msd_byte + 1 - i as u8;
+                                i += 1;
+                            }
+                        }
+                    }
+                    // Exp string follows the significand.
+                    let mut i = 0;
+                    while i < 4 {
+                        masks[out + length] = 8 + i;
+                        length += 1;
+                        i += 1;
+                    }
+                    masks[out + 15] = length as u8;
+                    extra_digit += 1;
+                }
+                has_last += 1;
+            }
+            ndigits += 1;
+        }
+
+        ScientificFloatMaskTable { masks }
+    }
+}
+
+#[cfg(any(
+    not(any(
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     )),
     all(test, target_endian = "little"),
 ))]
@@ -689,6 +889,7 @@ struct Data {
     exp_shifts: ExpShiftTable,
     exp_strings: ExpStringTable,
     pow10_significands: Pow10SignificandTable,
+    scientific_float_masks: ScientificFloatMaskTable,
 }
 
 impl Data {
@@ -780,6 +981,7 @@ static STATIC_DATA: Data = Data {
     exp_shifts: ExpShiftTable::new(),
     exp_strings: ExpStringTable::new(),
     pow10_significands: Pow10SignificandTable::new(),
+    scientific_float_masks: ScientificFloatMaskTable::new(),
 };
 
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
@@ -891,18 +1093,23 @@ fn to_bcd_4x4(y: __m128i, d: &Data) -> __m128i {
     }
 }
 
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+)))]
 struct BcdResult {
     bcd: u64,
     len: usize,
 }
 
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd8(abcdefgh: u64) -> BcdResult {
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    )))]
-    {
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(miri))))]
+    let bcd = {
         // An optimization from Xiang JunBo.
         // Three steps BCD. Base 10000 -> base 100 -> base 10.
         // div and mod are evaluated simultaneously as, e.g.
@@ -918,84 +1125,46 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
         let a_b_c_d_e_f_g_h = ab_cd_ef_gh
             + u64::from(NEG10)
                 * (((ab_cd_ef_gh * u64::from(DIV10_SIG)) >> DIV10_EXP) & 0xf000f000f000f);
-        let bcd = a_b_c_d_e_f_g_h.to_be();
-        BcdResult {
-            bcd,
-            len: count_trailing_nonzeros(bcd),
-        }
-    }
-
-    #[cfg(any(
-        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
-        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
-    ))]
-    let d = {
-        // Load constants from memory.
-        let mut d = ptr::addr_of!(STATIC_DATA);
-        unsafe {
-            asm!("/*{0}*/", inout(reg) d);
-            &*d
-        }
+        a_b_c_d_e_f_g_h.to_be()
     };
 
-    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
-    {
-        let abcd_efgh_64 =
-            abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let bcd = unsafe {
-            let abcd_efgh: int32x4_t = vcombine_s32(
-                vreinterpret_s32_u64(vcreate_u64(abcd_efgh_64)),
-                vdup_n_s32(0),
-            );
-            let digits_128: uint8x16_t = to_bcd_4x4(abcd_efgh, d);
-            let digits: uint8x8_t = vget_low_u8(digits_128);
-            vget_lane_u64(vreinterpret_u64_u8(vrev64_u8(digits)), 0)
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+    let bcd = {
+        // Load constants from memory.
+        let mut d = ptr::addr_of!(STATIC_DATA);
+        let d = unsafe {
+            asm!("/*{0}*/", inout(reg) d);
+            &*d
         };
-        BcdResult {
-            bcd,
-            len: count_trailing_nonzeros(bcd),
-        }
-    }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
-    {
-        let abcd_efgh =
-            abcdefgh + u64::from(NEG10K) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let unshuffled_bcd =
-            unsafe { _mm_cvtsi128_si64(to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d)) } as u64;
-        let len = if unshuffled_bcd != 0 {
-            8 - unshuffled_bcd.trailing_zeros() / 8
-        } else {
-            0
-        };
-        BcdResult {
-            bcd: unshuffled_bcd.swap_bytes(),
-            len: len as usize,
-        }
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "sse2",
-        not(target_feature = "sse4.1"),
-        not(miri)
-    ))]
-    {
         // Evaluate the 4-digit limbs and arrange them such that we get a
         // result which is in the correct order.
         let abcd_efgh = (abcdefgh << 32)
             - ((10000u64 << 32) - 1) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let v: __m128i = to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d);
-        let bcd = unsafe { _mm_cvtsi128_si64(v) } as u64;
-        BcdResult {
-            bcd,
-            len: count_trailing_nonzeros(bcd),
-        }
+        (unsafe { _mm_cvtsi128_si64(v) }) as u64
+    };
+
+    BcdResult {
+        bcd,
+        len: count_trailing_nonzeros(bcd),
     }
 }
 
+// For the SIMD paths with shuffle operations (SSE4.1, NEON) we keep the
+// byte-reversed ("unshuffled") SIMD result, as we use it to put together the
+// full string in the SIMD register for output with exponents (scientific
+// style).
 struct DecDigits<Float: FloatTraits> {
     digits: Float::DecDigitsType,
+    #[cfg_attr(
+        not(any(
+            all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+            all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+        )),
+        allow(dead_code)
+    )]
+    unshuffled: Float::DecUnshuffledType,
     num_digits: usize,
 }
 
@@ -1013,12 +1182,14 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
         if lo == 0 {
             return DecDigits {
                 digits: [hi_bcd.bcd + ZEROS, ZEROS],
+                unshuffled: (),
                 num_digits: hi_bcd.len,
             };
         }
         let lo_bcd = to_bcd8(lo as u64);
         DecDigits {
             digits: [hi_bcd.bcd + ZEROS, lo_bcd.bcd + ZEROS],
+            unshuffled: (),
             num_digits: 8 + lo_bcd.len,
         }
     }
@@ -1038,6 +1209,7 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
                 vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
             DecDigits {
                 digits: str,
+                unshuffled: (),
                 num_digits: 16 - (nonzero_mask.leading_zeros() as usize >> 2),
             }
         }
@@ -1090,6 +1262,7 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
 
             DecDigits {
                 digits: _mm_or_si128(bcd, zeros),
+                unshuffled: (),
                 num_digits: len as usize,
             }
         }
@@ -1098,12 +1271,111 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
 
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_digits_32(value: u64) -> DecDigits<f32> {
-    let result = to_bcd8(value);
-    DecDigits {
-        digits: result.bcd + ZEROS,
-        num_digits: result.len,
+fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f32> {
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    {
+        // Inline to_bcd8's SSE4.1 body so we can return the unshuffled xmm too;
+        // the scientific-notation path uses it to skip the bswap-via-gpr.
+        let abcd_efgh = value + u64::from(NEG10K) * ((value * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let bcd_xmm = to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d);
+        let unshuffled_bcd = unsafe { _mm_cvtsi128_si64(bcd_xmm) } as u64;
+        let len = if unshuffled_bcd != 0 {
+            8 - unshuffled_bcd.trailing_zeros() / 8
+        } else {
+            0
+        };
+        DecDigits {
+            digits: unshuffled_bcd.swap_bytes() + ZEROS,
+            unshuffled: bcd_xmm,
+            num_digits: len as usize,
+        }
     }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    {
+        // Inline to_bcd8's NEON body so we can return the unshuffled vector
+        // too; the scientific-notation path uses it to skip the
+        // simd->gpr->bswap->simd roundtrip needed to materialize `digits`.
+        let abcd_efgh = value + u64::from(NEG10K) * ((value * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
+        let unshuffled: uint8x16_t = unsafe {
+            let input: int32x4_t =
+                vcombine_s32(vreinterpret_s32_u64(vcreate_u64(abcd_efgh)), vdup_n_s32(0));
+            to_bcd_4x4(input, d)
+        };
+        let unshuffled_bcd =
+            unsafe { vget_lane_u64(vreinterpret_u64_u8(vget_low_u8(unshuffled)), 0) };
+        let len = if unshuffled_bcd != 0 {
+            8 - unshuffled_bcd.trailing_zeros() / 8
+        } else {
+            0
+        };
+        DecDigits {
+            digits: unshuffled_bcd.swap_bytes() + ZEROS,
+            unshuffled,
+            num_digits: len as usize,
+        }
+    }
+
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    )))]
+    {
+        let result = to_bcd8(value);
+        DecDigits {
+            digits: result.bcd + ZEROS,
+            unshuffled: (),
+            num_digits: result.len,
+        }
+    }
+}
+
+#[cfg(any(
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+))]
+#[cfg_attr(feature = "no-panic", no_panic)]
+unsafe fn write_scientific_float_simd_32(
+    buffer: *mut u8,
+    dig: &DecDigits<f32>,
+    last_digit_value: i32,
+    has_last_digit: bool,
+    extra_digit: bool,
+    exp_data: u64,
+    d: &Data,
+) -> *mut u8 {
+    let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit_value as u32;
+    let hi_qword = (exp_data & 0xFFFFFFFF) | (u64::from(prefix) << 32);
+    let m = unsafe {
+        d.scientific_float_masks
+            .get_entry(dig.num_digits as i32, has_last_digit, extra_digit)
+    };
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+    unsafe {
+        let ascii: __m128i = _mm_or_si128(
+            dig.unshuffled,
+            _mm_load_si128(ptr::addr_of!(d.zeros).cast::<__m128i>()),
+        );
+        let src: __m128i = _mm_insert_epi64(ascii, hi_qword as i64, 1);
+        let mask: __m128i = _mm_load_si128(m.mask.cast::<__m128i>());
+        let out: __m128i = _mm_shuffle_epi8(src, mask);
+        _mm_storeu_si128(buffer.cast::<__m128i>(), out);
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    unsafe {
+        let ascii: uint8x16_t = vorrq_u8(dig.unshuffled, vdupq_n_u8(b'0'));
+        let src: uint8x16_t =
+            vreinterpretq_u8_u64(vsetq_lane_u64(hi_qword, vreinterpretq_u64_u8(ascii), 1));
+
+        let mask: uint8x16_t = vld1q_u8(m.mask);
+        let out: uint8x16_t = vqtbl1q_u8(src, mask);
+        vst1q_u8(buffer, out);
+    }
+
+    let length = m.length as usize - usize::from((exp_data & 0xff000000) == 0);
+    unsafe { buffer.add(length) }
 }
 
 struct ToDecimalResult {
@@ -1331,6 +1603,34 @@ where
 
     // Write significand.
     let dig = Float::to_digits(dec.sig as u64, d);
+
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    {
+        if Float::NUM_BITS == 32
+            && ScientificFloatMaskTable::ENABLE
+            && !Float::FIXED_DEC_EXP.contains(&dec_exp)
+        {
+            unsafe {
+                let exp_data = *d
+                    .exp_strings
+                    .data
+                    .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize);
+                return Float::write_scientific_float_simd(
+                    buffer,
+                    &dig,
+                    i32::from(dec.last_digit),
+                    has_last_digit,
+                    extra_digit,
+                    exp_data,
+                    d,
+                );
+            }
+        }
+    }
+
     let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
     unsafe {
         buffer
