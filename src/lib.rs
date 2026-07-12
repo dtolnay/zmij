@@ -1402,13 +1402,12 @@ where
     }
 
     let length = unsafe {
-        let split_last_digit = Float::NUM_BITS == 64;
         let dig = Float::to_digits(buffer.add(1), dec.sig as u64, extra_digit, c);
         buffer
-            .add(usize::from(extra_digit) + usize::from(!split_last_digit))
+            .add(usize::from(extra_digit) + usize::from(Float::NUM_BITS != 64))
             .cast::<Float::DecDigitsType>()
             .write_unaligned(dig.digits);
-        if split_last_digit {
+        if Float::NUM_BITS == 64 {
             buffer
                 .add(usize::from(extra_digit) + 16)
                 .write(b'0' + dec.last_digit);
