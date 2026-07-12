@@ -483,29 +483,29 @@ impl ExpShiftTable {
     // extra_shift must be >= 3 to keep shift non-negative and <= 11 to fit the
     // significand into 64 bits after the shift.
     const EXTRA_SHIFT: usize = 6;
-}
 
-static EXP_SHIFTS: ExpShiftTable = {
-    let mut data = [0u8; if ExpShiftTable::ENABLE {
-        f64::EXP_MASK as usize + 1
-    } else {
-        0
-    }];
+    const fn new() -> Self {
+        let mut data = [0u8; if Self::ENABLE {
+            f64::EXP_MASK as usize + 1
+        } else {
+            0
+        }];
 
-    let mut raw_exp = 0;
-    while raw_exp < data.len() && ExpShiftTable::ENABLE {
-        let mut bin_exp = raw_exp as i32 - f64::EXP_OFFSET;
-        if raw_exp == 0 {
-            bin_exp += 1;
+        let mut raw_exp = 0;
+        while raw_exp < data.len() && Self::ENABLE {
+            let mut bin_exp = raw_exp as i32 - f64::EXP_OFFSET;
+            if raw_exp == 0 {
+                bin_exp += 1;
+            }
+            let dec_exp = compute_dec_exp(bin_exp, true);
+            data[raw_exp] =
+                compute_exp_shift(bin_exp, dec_exp + 1).wrapping_add(Self::EXTRA_SHIFT as u8);
+            raw_exp += 1;
         }
-        let dec_exp = compute_dec_exp(bin_exp, true);
-        data[raw_exp] =
-            compute_exp_shift(bin_exp, dec_exp + 1).wrapping_add(ExpShiftTable::EXTRA_SHIFT as u8);
-        raw_exp += 1;
-    }
 
-    ExpShiftTable { data }
-};
+        ExpShiftTable { data }
+    }
+}
 
 // An optional table of precomputed exponent strings for scientific notation.
 // Each entry packs "e+dd" or "e+ddd" into a u64 with the length in byte 7.
@@ -521,35 +521,35 @@ impl ExpStringTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
     const MIN_DEC_EXP: i32 = f64::MIN_10_EXP - f64::MAX_DIGITS10 as i32;
     const OFFSET: i32 = -Self::MIN_DEC_EXP;
-}
 
-static EXP_STRINGS: ExpStringTable = {
-    let mut data = [0u64; if ExpStringTable::ENABLE {
-        (f64::MAX_10_EXP - ExpStringTable::MIN_DEC_EXP + 1) as usize
-    } else {
-        0
-    }];
+    const fn new() -> Self {
+        let mut data = [0u64; if Self::ENABLE {
+            (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
+        } else {
+            0
+        }];
 
-    let mut e = ExpStringTable::MIN_DEC_EXP;
-    while e <= f64::MAX_10_EXP && ExpStringTable::ENABLE {
-        let abs_e = e.unsigned_abs() as u64;
-        let mut val = abs_e % 10 + b'0' as u64;
-        if abs_e >= 10 {
-            val = (val << 8) | (abs_e / 10 % 10 + b'0' as u64);
+        let mut e = Self::MIN_DEC_EXP;
+        while e <= f64::MAX_10_EXP && Self::ENABLE {
+            let abs_e = e.unsigned_abs() as u64;
+            let mut val = abs_e % 10 + b'0' as u64;
+            if abs_e >= 10 {
+                val = (val << 8) | (abs_e / 10 % 10 + b'0' as u64);
+            }
+            if abs_e >= 100 {
+                val = (val << 8) | (abs_e / 100 + b'0' as u64);
+            }
+            let len = 3 + (abs_e >= 10) as u64 + (abs_e >= 100) as u64;
+            data[(e + Self::OFFSET) as usize] = (len << 48)
+                | (val << 16)
+                | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
+                | b'e' as u64;
+            e += 1;
         }
-        if abs_e >= 100 {
-            val = (val << 8) | (abs_e / 100 + b'0' as u64);
-        }
-        let len = 3 + (abs_e >= 10) as u64 + (abs_e >= 100) as u64;
-        data[(e + ExpStringTable::OFFSET) as usize] = (len << 48)
-            | (val << 16)
-            | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
-            | b'e' as u64;
-        e += 1;
+
+        ExpStringTable { data }
     }
-
-    ExpStringTable { data }
-};
+}
 
 #[cfg(any(
     not(all(
@@ -679,6 +679,8 @@ struct Constants {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: u128,
 
+    exp_shifts: ExpShiftTable,
+    exp_strings: ExpStringTable,
     pow10_significands: Pow10SignificandTable,
 }
 
@@ -768,6 +770,8 @@ static CONSTS: Constants = Constants {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: Constants::splat64(ZEROS),
 
+    exp_shifts: ExpShiftTable::new(),
+    exp_strings: ExpStringTable::new(),
     pow10_significands: Pow10SignificandTable::new(),
 };
 
@@ -1237,7 +1241,7 @@ where
     // l - longer underestimate,  L - longer overestimate
     let shift = if ExpShiftTable::ENABLE {
         *unsafe {
-            EXP_SHIFTS
+            c.exp_shifts
                 .data
                 .get_unchecked((bin_exp + i64::from(Float::EXP_OFFSET)) as usize)
         }
@@ -1417,7 +1421,7 @@ where
     // Write exponent.
     if ExpStringTable::ENABLE {
         let mut exp_data = unsafe {
-            *EXP_STRINGS
+            *c.exp_strings
                 .data
                 .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize)
         };
