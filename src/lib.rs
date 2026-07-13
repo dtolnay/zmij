@@ -1328,7 +1328,7 @@ unsafe fn write_exp_float_simd_32(
             .get_entry(dig.num_digits as i32, has_last_digit, has_extra_digit)
     };
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     unsafe {
         let ascii: __m128i = _mm_or_si128(
             dig.unshuffled,
@@ -1340,7 +1340,7 @@ unsafe fn write_exp_float_simd_32(
         _mm_storeu_si128(buffer.cast::<__m128i>(), out);
     }
 
-    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     unsafe {
         let ascii: uint8x16_t = vorrq_u8(dig.unshuffled, vdupq_n_u8(b'0'));
         let src: uint8x16_t =
