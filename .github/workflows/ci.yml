@@ -119,7 +119,7 @@ jobs:
         include:
           - name: 64-bit little endian
             target: x86_64-unknown-linux-gnu
-          - name: 64-bit little endian ARM
+          - name: 64-bit little endian (NEON)
             target: aarch64-unknown-linux-gnu
           - name: 64-bit big endian
             target: powerpc64-unknown-linux-gnu
