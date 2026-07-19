@@ -88,13 +88,16 @@ mod dtoa_test {
         assert_eq!(dtoa(6.079537928711555e+61), "6.079537928711555e+61");
     }
 
+    // Rounding-boundary doubles enumerated by verify.py (see --dump-boundaries).
+    static BOUNDARY_BITS: &[u64] = &include!("generated/boundary_bits.rs");
+
     // Check zmij against ryu on every rounding-boundary double verify.py
     // enumerates, using dragonbox's to_decimal as an independent oracle.
     #[test]
     fn boundary_sweep() {
         let mut zmij = zmij::Buffer::new();
         let mut ryu = ryu::Buffer::new();
-        for bits in include!("generated/boundary_bits.rs") {
+        for &bits in BOUNDARY_BITS {
             let value = f64::from_bits(bits);
             assert_eq!(
                 zmij.format_finite(value).replace("e+", "e"),
