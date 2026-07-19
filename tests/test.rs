@@ -88,17 +88,20 @@ mod dtoa_test {
         assert_eq!(dtoa(6.079537928711555e+61), "6.079537928711555e+61");
     }
 
+    // Check zmij against ryu on every rounding-boundary double verify.py
+    // enumerates, using dragonbox's to_decimal as an independent oracle.
     #[test]
-    fn boundary_cases() {
-        assert_eq!(dtoa(1.3588129002659584e-245), "1.3588129002659584e-245");
-        assert_eq!(dtoa(2.9802322387695312e-08), "2.9802322387695312e-8");
-        assert_eq!(dtoa(5.960464477539063e-08), "5.960464477539063e-8");
-        assert_eq!(dtoa(1.3076622631878654e+65), "1.3076622631878654e+65");
-        assert_eq!(dtoa(9.03725590277404e+159), "9.03725590277404e+159");
-        assert_eq!(dtoa(9.03725590277404e+160), "9.03725590277404e+160");
-        assert_eq!(dtoa(9.03725590277404e+161), "9.03725590277404e+161");
-        assert_eq!(dtoa(9.03725590277404e+162), "9.03725590277404e+162");
-        assert_eq!(dtoa(5.960464477539062e-07), "5.960464477539062e-7");
+    fn boundary_sweep() {
+        let mut zmij = zmij::Buffer::new();
+        let mut ryu = ryu::Buffer::new();
+        for bits in include!("generated/boundary_bits.rs") {
+            let value = f64::from_bits(bits);
+            assert_eq!(
+                zmij.format_finite(value).replace("e+", "e"),
+                ryu.format_finite(value),
+                "bits=0x{bits:016x}",
+            );
+        }
     }
 
     #[test]
