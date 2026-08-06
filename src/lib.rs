@@ -1503,6 +1503,34 @@ where
     }
 }
 
+/// Copies `count` bytes starting at `src.add(1)` to `src`, shifting left by 1.
+#[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
+unsafe fn copy_exact_left_by_1(src: *mut u8, count: usize) {
+    debug_assert!((1..=16).contains(&count));
+
+    macro_rules! shift {
+        ($ty:ty, $tail:expr) => {{
+            unsafe {
+                let a = src.add(1).cast::<$ty>().read_unaligned();
+                let b = src.add(count - ($tail - 1)).cast::<$ty>().read_unaligned();
+                src.cast::<$ty>().write_unaligned(a);
+                src.add(count - $tail).cast::<$ty>().write_unaligned(b);
+            }
+        }};
+    }
+
+    if count >= 8 {
+        shift!(u64, 8);
+    } else if count >= 4 {
+        shift!(u32, 4);
+    } else if count >= 2 {
+        shift!(u16, 2);
+    } else {
+        unsafe { *src = *src.add(1) };
+    }
+}
+
 /// Writes the shortest correctly rounded decimal representation of `value` to
 /// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
 #[cfg_attr(feature = "no-panic", no_panic)]
@@ -1602,15 +1630,7 @@ where
     }
 
     let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
-    unsafe {
-        buffer
-            .add(usize::from(has_extra_digit))
-            .cast::<Float::DecDigitsType>()
-            .write_unaligned(dig.digits);
-        buffer
-            .add(usize::from(has_extra_digit) + bcd_size)
-            .write(b'0' + dec.last_digit);
-    }
+
     let length = usize::from(has_extra_digit)
         + if has_last_digit {
             bcd_size + 1
@@ -1620,30 +1640,92 @@ where
         - 1;
 
     if Float::FIXED_DEC_EXP.contains(&dec_exp) {
-        if length as i32 - 1 <= dec_exp {
-            // 1234e7 -> 12340000000.0
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer, length);
-                ptr::write_bytes(buffer.add(length), b'0', dec_exp as usize + 3 - length);
-                *buffer.add(dec_exp as usize + 1) = b'.';
-                buffer.add(dec_exp as usize + 3)
+        let extra = usize::from(has_extra_digit);
+
+        return if dec_exp < 0 {
+            // 1234e-6 -> 0.00123
+            let base = (1 - dec_exp) as usize;
+            unsafe {
+                buffer.cast::<u64>().write_unaligned(ZEROS);
+                buffer
+                    .add(base - 1 + extra)
+                    .cast::<Float::DecDigitsType>()
+                    .write_unaligned(dig.digits);
             };
-        } else if 0 <= dec_exp {
+
+            if has_last_digit {
+                unsafe {
+                    buffer
+                        .add(base - 1 + extra + bcd_size)
+                        .write(b'0' + dec.last_digit)
+                };
+            }
+            unsafe {
+                *buffer.add(1) = b'.';
+                buffer.add(base + length)
+            }
+        } else if length as i32 - 1 <= dec_exp {
+            // 1234e7 -> 12340000000.0
+            unsafe {
+                buffer
+                    .cast::<Float::DecDigitsType>()
+                    .write_unaligned(dig.digits)
+            };
+            if has_last_digit {
+                unsafe { buffer.add(bcd_size).write(b'0' + dec.last_digit) };
+            }
+            if extra == 0 {
+                unsafe { copy_exact_left_by_1(buffer, length.max(1)) };
+            }
+            let fill_from = length.max(1);
+            // Skip the fill when there are no zeros: for negative values
+            // only 23 buffer bytes are left and the store at offset 16
+            // would overshoot the allocation.
+            if dec_exp as usize + 1 > fill_from {
+                unsafe { buffer.add(fill_from).cast::<u64>().write_unaligned(ZEROS) };
+                if dec_exp as usize + 1 > fill_from + 8 {
+                    unsafe {
+                        buffer
+                            .add(dec_exp as usize + 1 - 8)
+                            .cast::<u64>()
+                            .write_unaligned(ZEROS)
+                    };
+                }
+            }
+            unsafe {
+                buffer
+                    .add(dec_exp as usize + 1)
+                    .cast::<u16>()
+                    .write_unaligned(u16::from_ne_bytes(*b".0"));
+                buffer.add(dec_exp as usize + 3)
+            }
+        } else {
             // 1234e-2 -> 12.34
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer, dec_exp as usize + 1);
+            unsafe {
+                buffer
+                    .add(extra)
+                    .cast::<Float::DecDigitsType>()
+                    .write_unaligned(dig.digits)
+            };
+            if has_last_digit {
+                unsafe { buffer.add(extra + bcd_size).write(b'0' + dec.last_digit) };
+            }
+            unsafe {
+                copy_exact_left_by_1(buffer, dec_exp as usize + 1);
                 *buffer.add(dec_exp as usize + 1) = b'.';
                 buffer.add(length + 1)
-            };
-        } else {
-            // 1234e-6 -> 0.001234
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer.add((1 - dec_exp) as usize), length);
-                ptr::write_bytes(buffer, b'0', (1 - dec_exp) as usize);
-                *buffer.add(1) = b'.';
-                buffer.add((1 - dec_exp) as usize + length)
-            };
-        }
+            }
+        };
+    }
+
+    unsafe {
+        buffer
+            .add(usize::from(has_extra_digit))
+            .cast::<Float::DecDigitsType>()
+            .write_unaligned(dig.digits);
+        buffer
+            .add(usize::from(has_extra_digit) + bcd_size)
+            .write(b'0' + dec.last_digit);
     }
 
     unsafe {
