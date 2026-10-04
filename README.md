@@ -9,9 +9,10 @@ Pure Rust implementation of Żmij, an algorithm to quickly convert floating poin
 numbers to decimal strings.
 
 This Rust implementation is a line-by-line port of Victor Zverovich's
-implementation in C++, [https://github.com/vitaut/zmij][upstream].
+implementation in C++, [https://github.com/vitaut/zmij][upstream], with
+minor changes.
 
-[upstream]: https://github.com/vitaut/zmij/tree/e227fc8d1da00b17b0ddd2e7d1b79c255339ab6d
+[upstream]: https://github.com/vitaut/zmij/tree/b066b1cff056bb0ffd834dc3f496da6a4872966f
 
 ## Example
 
@@ -22,6 +23,12 @@ fn main() {
     assert_eq!(printed, "1.234");
 }
 ```
+
+## Differences with upstream
+- `nan` is formatted as `NaN`, and its sign is excluded (no `-NaN` output).
+- Scientific notation uses `e±d` instead of `e±0d` for exponents below 10.
+- A decimal point is always present even for integers (`1.0` instead of `1`).
+- The threshold before using scientific notation instead of fixed-point is larger.
 
 ## Performance
 

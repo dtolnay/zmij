@@ -5,6 +5,8 @@ pub trait Float: Copy {
     const MANTISSA_DIGITS: u32;
     const MIN_10_EXP: i32;
     const MAX_10_EXP: i32;
+    const MIN_EXP: i32;
+    const MAX_EXP: i32;
     const MAX_DIGITS10: u32;
 }
 
@@ -12,6 +14,8 @@ impl Float for f32 {
     const MANTISSA_DIGITS: u32 = Self::MANTISSA_DIGITS;
     const MIN_10_EXP: i32 = Self::MIN_10_EXP;
     const MAX_10_EXP: i32 = Self::MAX_10_EXP;
+    const MIN_EXP: i32 = Self::MIN_EXP;
+    const MAX_EXP: i32 = Self::MAX_EXP;
     const MAX_DIGITS10: u32 = 9;
 }
 
@@ -19,6 +23,8 @@ impl Float for f64 {
     const MANTISSA_DIGITS: u32 = Self::MANTISSA_DIGITS;
     const MIN_10_EXP: i32 = Self::MIN_10_EXP;
     const MAX_10_EXP: i32 = Self::MAX_10_EXP;
+    const MIN_EXP: i32 = Self::MIN_EXP;
+    const MAX_EXP: i32 = Self::MAX_EXP;
     const MAX_DIGITS10: u32 = 17;
 }
 

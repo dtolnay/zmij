@@ -75,6 +75,7 @@ mod stdarch_x86;
 #[cfg(test)]
 mod tests;
 mod traits;
+mod utils;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 use crate::stdarch_x86::{
@@ -89,7 +90,8 @@ use crate::stdarch_x86::{
     not(miri)
 ))]
 use crate::stdarch_x86::{
-    _mm_insert_epi64, _mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128,
+    _mm_extract_epi8, _mm_insert_epi64, _mm_loadu_si128, _mm_mullo_epi32, _mm_shuffle_epi8,
+    _mm_srli_epi32, _mm_storeu_si128,
 };
 #[cfg(all(
     target_arch = "x86_64",
@@ -101,6 +103,7 @@ use crate::stdarch_x86::{
     _mm_shuffle_epi32, _mm_slli_epi16, _mm_slli_epi32, _mm_srli_epi16, _mm_sub_epi16, _MM_SHUFFLE,
 };
 use crate::traits::Float as _;
+use crate::utils::unlikely;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 use core::arch::aarch64::{
     int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, vaddq_u16, vcgtzq_s8,
@@ -109,8 +112,8 @@ use core::arch::aarch64::{
     vqdmulhq_n_s32, vqtbl1q_u8, vreinterpret_s32_u32, vreinterpret_s32_u64, vreinterpret_u16_s32,
     vreinterpret_u32_s32, vreinterpret_u64_u8, vreinterpretq_s16_s32, vreinterpretq_s32_u32,
     vreinterpretq_s8_u8, vreinterpretq_u16_s8, vreinterpretq_u16_u8, vreinterpretq_u64_u8,
-    vreinterpretq_u8_s16, vreinterpretq_u8_u64, vrev64q_u8, vsetq_lane_u64, vshll_n_u16,
-    vshr_n_u32, vshrn_n_u16, vst1q_u8,
+    vreinterpretq_u8_s16, vreinterpretq_u8_u16, vreinterpretq_u8_u64, vrev64q_u8, vsetq_lane_u64,
+    vshll_n_u16, vshr_n_u32, vshrn_n_u16, vst1q_u8,
 };
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
@@ -122,13 +125,14 @@ use core::str;
 #[cfg(feature = "no-panic")]
 use no_panic::no_panic;
 
-const BUFFER_SIZE: usize = 24;
+const BUFFER_SIZE: usize = 34;
 const NAN: &str = "NaN";
 const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 
 // Declares struct members that must live in memory on ARM64 but are encoded as
 // immediates in the x64 assembly.
+// Known as ZMIJ_CONST_DECL upstream.
 struct AArch64Mem<const VALUE: u64> {
     #[cfg(target_arch = "aarch64")]
     value: u64,
@@ -192,15 +196,6 @@ fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
     }
 }
 
-// Returns x / 10 for x <= 2**62.
-#[cfg_attr(feature = "no-panic", no_panic)]
-fn div10(x: u64) -> u64 {
-    debug_assert!(x < (1 << 62));
-    // ceil(2**64 / 10) computed as (1 << 63) / 5 + 1 to avoid int128.
-    const DIV10_SIG64: u64 = (1 << 63) / 5 + 1;
-    umul128_hi64(x, DIV10_SIG64)
-}
-
 // Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
 // floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
 const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
@@ -213,18 +208,20 @@ const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
     (bin_exp * LOG10_2_SIG - !regular as i32 * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
 }
 
-trait FloatTraits: traits::Float {
-    // Note: Rust port uses wider fixed-notation ranges than upstream.
-    const FIXED_DEC_EXP: RangeInclusive<i32>;
-
-    const NUM_BITS: i32;
+trait FloatTraits: crate::traits::Float {
     const NUM_SIG_BITS: i32 = Self::MANTISSA_DIGITS as i32 - 1;
-    const NUM_EXP_BITS: i32 = Self::NUM_BITS - Self::NUM_SIG_BITS - 1;
+    const NUM_EXP_BITS: i32 = Self::MAX_EXP.ilog2() as i32 + 1;
+
+    const EXP_SHIFT: i32 = Self::NUM_SIG_BITS;
+    const NUM_BITS: i32 = Self::EXP_SHIFT + Self::NUM_EXP_BITS + 1;
     const EXP_MASK: i32 = (1 << Self::NUM_EXP_BITS) - 1;
     const EXP_BIAS: i32 = (1 << (Self::NUM_EXP_BITS - 1)) - 1;
     const EXP_OFFSET: i32 = Self::EXP_BIAS + Self::NUM_SIG_BITS;
 
-    type SigType: traits::UInt;
+    // Note: Rust port uses wider fixed-notation ranges than upstream.
+    const FIXED_DEC_EXP: RangeInclusive<i32>;
+
+    type SigType: crate::traits::UInt;
     const IMPLICIT_BIT: Self::SigType;
 
     type DecDigitsType: Copy;
@@ -238,7 +235,7 @@ trait FloatTraits: traits::Float {
     fn to_bits(self) -> Self::SigType;
 
     fn is_negative(bits: Self::SigType) -> bool {
-        (bits >> (Self::NUM_BITS - 1)) != Self::SigType::from(0)
+        ((bits >> (Self::NUM_BITS - 1)) & Self::SigType::from(1)) != Self::SigType::from(0)
     }
 
     fn get_sig(bits: Self::SigType) -> Self::SigType {
@@ -246,7 +243,11 @@ trait FloatTraits: traits::Float {
     }
 
     fn get_exp(bits: Self::SigType) -> i64 {
-        (bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
+        ((bits >> Self::EXP_SHIFT).into() & Self::EXP_MASK as u64) as i64
+    }
+
+    fn is_normal(bin_exp: i64) -> bool {
+        ((bin_exp - 1) as u32) < ((Self::EXP_MASK - 1) as u32)
     }
 
     // Converts a significand to a string, removing trailing zeros. value has up
@@ -254,13 +255,20 @@ trait FloatTraits: traits::Float {
     // for normals) for f32.
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self>;
 
-    unsafe fn write_exp_float_simd(
+    unsafe fn write_digits(
+        buffer: *mut u8,
+        digits: Self::DecDigitsType,
+        drop_leading_zero: bool,
+        d: &Data,
+    );
+
+    unsafe fn write_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
         last_digit: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
-        exp_data: u64,
+        dec_exp: i32,
         d: &Data,
     ) -> *mut u8;
 }
@@ -269,7 +277,6 @@ impl FloatTraits for f32 {
     // Upstream uses -4..=6.
     const FIXED_DEC_EXP: RangeInclusive<i32> = -6..=12;
 
-    const NUM_BITS: i32 = 32;
     const IMPLICIT_BIT: u32 = 1 << Self::NUM_SIG_BITS;
 
     type SigType = u32;
@@ -292,23 +299,33 @@ impl FloatTraits for f32 {
     }
 
     #[inline]
-    unsafe fn write_exp_float_simd(
+    unsafe fn write_digits(
+        buffer: *mut u8,
+        digits: Self::DecDigitsType,
+        drop_leading_zero: bool,
+        d: &Data,
+    ) {
+        unsafe { write_digits_32(buffer, digits, drop_leading_zero, d) }
+    }
+
+    #[inline]
+    unsafe fn write_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
         last_digit: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
-        exp_data: u64,
+        dec_exp: i32,
         d: &Data,
     ) -> *mut u8 {
         unsafe {
-            write_exp_float_simd_32(
+            write_float_simd_32(
                 buffer,
                 dig,
                 last_digit,
                 has_last_digit,
                 has_extra_digit,
-                exp_data,
+                dec_exp,
                 d,
             )
         }
@@ -319,7 +336,6 @@ impl FloatTraits for f64 {
     // Upstream uses -4..=15.
     const FIXED_DEC_EXP: RangeInclusive<i32> = -5..=15;
 
-    const NUM_BITS: i32 = 64;
     const IMPLICIT_BIT: u64 = 1 << Self::NUM_SIG_BITS;
 
     type SigType = u64;
@@ -351,18 +367,40 @@ impl FloatTraits for f64 {
     }
 
     #[inline]
-    unsafe fn write_exp_float_simd(
-        _buffer: *mut u8,
-        _dig: &DecDigits<Self>,
-        _last_digit: i32,
-        _has_last_digit: bool,
-        _has_extra_digit: bool,
-        _exp_data: u64,
-        _d: &Data,
+    unsafe fn write_digits(
+        buffer: *mut u8,
+        digits: Self::DecDigitsType,
+        drop_leading_zero: bool,
+        d: &Data,
+    ) {
+        unsafe { write_digits_64(buffer, digits, drop_leading_zero, d) }
+    }
+
+    #[inline]
+    unsafe fn write_float_simd(
+        buffer: *mut u8,
+        dig: &DecDigits<Self>,
+        last_digit: i32,
+        has_last_digit: bool,
+        has_extra_digit: bool,
+        dec_exp: i32,
+        d: &Data,
     ) -> *mut u8 {
-        ptr::null_mut()
+        unsafe {
+            write_float_simd_64(
+                buffer,
+                dig,
+                last_digit,
+                has_last_digit,
+                has_extra_digit,
+                dec_exp,
+                d,
+            )
+        }
     }
 }
+
+// Compressed 128-bit significands of powers of 10.
 
 #[rustfmt::skip]
 const POW10_MINOR: [u64; 28] = [
@@ -379,7 +417,8 @@ const POW10_MINOR: [u64; 28] = [
 ];
 
 #[rustfmt::skip]
-const POW10_MAJOR: [uint128; 23] = [
+const POW10_MAJOR: [uint128; 25] = [
+    uint128 { hi: 0xaddcb9e83c6b1793, lo: 0xdf4abe242a1bbf3e }, // -331 (+1 ULP: see fixups)
     uint128 { hi: 0xaf8e5410288e1b6f, lo: 0x07ecf0ae5ee44dda }, // -303
     uint128 { hi: 0xb1442798f49ffb4a, lo: 0x99cd11cfdf41779d }, // -275
     uint128 { hi: 0xb2fe3f0b8599ef07, lo: 0x861fa7e6dcb4aa15 }, // -247
@@ -402,38 +441,65 @@ const POW10_MAJOR: [uint128; 23] = [
     uint128 { hi: 0xd31045a8341ca07c, lo: 0x1ede48111209a051 }, //  229
     uint128 { hi: 0xd51ea6fa85785631, lo: 0x552a74227f3ea566 }, //  257
     uint128 { hi: 0xd732290fbacaf133, lo: 0xa97c177947ad4096 }, //  285
-    uint128 { hi: 0xd94ad8b1c7380874, lo: 0x18375281ae7822bc }, //  313
+    uint128 { hi: 0xd94ad8b1c7380874, lo: 0x18375281ae7822bd }, //  313 (+1 ULP: see fixups)
+    uint128 { hi: 0xdb68c2ca82ed2a05, lo: 0xa67398db9f6820e1 }, //  341
 ];
 
 #[rustfmt::skip]
-const POW10_FIXUPS: [u32; 20] = [
-    0x0a4e363f, 0x00001840, 0x00006400, 0x24200040, 0x00000000,
-    0x0c000000, 0x82c81380, 0x5e4ce01f, 0xd730f60f, 0x0000001b,
-    0x00000000, 0xcdf7fffc, 0x6e8201d8, 0x40cd3fd1, 0xdb642501,
-    0x00000d0d, 0x14042400, 0x53713840, 0x11781db4, 0x00000000,
+const POW10_FIXUPS: [u32; 21] = [
+    0x8d8fc810, 0x06100293, 0x19000000, 0x00100000, 0x00000908, 0x00000000,
+    0x04e00300, 0x3807e0b2, 0x3d83d793, 0x0006f5cc, 0x00000000, 0xffff0000,
+    0x8076337d, 0x4ff45ba0, 0x09405033, 0x034376d9, 0x09000000, 0x4e100501,
+    0x076d14dc, 0xf964f45e, 0x0000003d,
+];
+
+#[rustfmt::skip]
+const POW10S: [u64; 19] = [
+    1,
+    10,
+    100,
+    1000,
+    10000,
+    100000,
+    1000000,
+    10000000,
+    100000000,
+    1000000000,
+    10000000000,
+    100000000000,
+    1000000000000,
+    10000000000000,
+    100000000000000,
+    1000000000000000,
+    10000000000000000,
+    100000000000000000,
+    1000000000000000000,
 ];
 
 // 128-bit significands of powers of 10 rounded down.
 #[repr(C, align(64))]
 struct Pow10SignificandTable {
-    data: [u64; if Self::COMPRESS {
-        0
-    } else {
-        Self::NUM_POW10S * 2
-    }],
+    data: [u64; Self::DATA_LEN],
 }
 
 impl Pow10SignificandTable {
     const COMPRESS: bool = cfg!(opt_level = "s");
     const SPLIT_TABLES: bool = !Self::COMPRESS && cfg!(target_arch = "aarch64");
-    const NUM_POW10S: usize = 618;
+    const NUM_POW10S: usize = 649;
 
-    // Computes the 128-bit significand of 10**i using method by Dougall Johnson.
+    const DATA_LEN: usize = if Self::COMPRESS {
+        0
+    } else {
+        Self::NUM_POW10S * 2
+    };
+
+    // Computes the 128-bit significand of 10**i rounded down using method by
+    // Dougall Johnson.
     #[inline]
     const fn compute(i: u32) -> uint128 {
         const STRIDE: u32 = POW10_MINOR.len() as u32;
-        let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 10) % STRIDE) as usize) };
-        let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 10) / STRIDE) as usize) };
+        let m = unsafe { *POW10_MINOR.as_ptr().add(((i + 24) % STRIDE) as usize) };
+        let h = unsafe { *POW10_MAJOR.as_ptr().add(((i + 24) / STRIDE) as usize) };
 
         let h1 = umul128_hi64(h.lo, m);
 
@@ -455,11 +521,7 @@ impl Pow10SignificandTable {
     }
 
     const fn new() -> Self {
-        let mut data = [0; if Self::COMPRESS {
-            0
-        } else {
-            Self::NUM_POW10S * 2
-        }];
+        let mut data = [0; Self::DATA_LEN];
 
         let mut i = 0;
         while i < Self::NUM_POW10S && !Self::COMPRESS {
@@ -478,8 +540,9 @@ impl Pow10SignificandTable {
     }
 
     #[inline]
+    #[cfg_attr(feature = "no-panic", no_panic)]
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -293;
+        const DEC_EXP_MIN: i32 = -307;
         let i = dec_exp - DEC_EXP_MIN;
         if Self::COMPRESS {
             return Self::compute(i as u32);
@@ -515,7 +578,7 @@ impl Pow10SignificandTable {
 
     #[cfg(test)]
     fn get(&self, dec_exp: i32) -> uint128 {
-        const DEC_EXP_MIN: i32 = -292;
+        const DEC_EXP_MIN: i32 = -307;
         assert!((DEC_EXP_MIN..DEC_EXP_MIN + Self::NUM_POW10S as i32).contains(&dec_exp));
         unsafe { self.get_unchecked(dec_exp) }
     }
@@ -544,25 +607,24 @@ const fn compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
 }
 
 struct ExpShiftTable {
-    data: [u8; if Self::ENABLE {
-        f64::EXP_MASK as usize + 1
-    } else {
-        0
-    }],
+    data: [u8; Self::DATA_LEN],
 }
 
 impl ExpShiftTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
-    // extra_shift must be >= 3 to keep shift non-negative and <= 11 to fit the
-    // significand into 64 bits after the shift.
-    const EXTRA_SHIFT: usize = 6;
+    const DATA_LEN: usize = if Self::ENABLE {
+        f64::EXP_MASK as usize + 1
+    } else {
+        0
+    };
+
+    // extra_shift in [3, 10]: >= 3 keeps shift non-negative, <= 10 keeps
+    // bin_sig << shift in 64 bits (11 overflows the irregular 2**52 << 12).
+    // 9 is fastest: extra_shift + 1 == 10 reuses the base-10 digit constant.
+    const EXTRA_SHIFT: usize = 9;
 
     const fn new() -> Self {
-        let mut data = [0u8; if Self::ENABLE {
-            f64::EXP_MASK as usize + 1
-        } else {
-            0
-        }];
+        let mut data = [0; Self::DATA_LEN];
 
         let mut raw_exp = 0;
         while raw_exp < data.len() && Self::ENABLE {
@@ -581,42 +643,56 @@ impl ExpShiftTable {
 }
 
 // An optional table of precomputed exponent strings for exponential notation.
-// Each entry packs "e+dd" or "e+ddd" into a u64 with the length in byte 7.
+// Each entry packs "e+d", "e+dd" or "e+ddd" into a u64 with the length in byte 7.
+// Rust port: e+d is allowed as a representation (instead of e+0d).
 struct ExpStringTable {
-    data: [u64; if Self::ENABLE {
-        (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
-    } else {
-        0
-    }],
+    data: [u64; Self::DATA_LEN],
 }
 
 impl ExpStringTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
+    const DATA_LEN: usize = if Self::ENABLE {
+        (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
+    } else {
+        0
+    };
+
     const MIN_DEC_EXP: i32 = f64::MIN_10_EXP - f64::MAX_DIGITS10 as i32;
     const OFFSET: i32 = -Self::MIN_DEC_EXP;
 
     const fn new() -> Self {
-        let mut data = [0u64; if Self::ENABLE {
-            (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
-        } else {
-            0
-        }];
+        let mut data = [0u64; Self::DATA_LEN];
 
         let mut e = Self::MIN_DEC_EXP;
         while e <= f64::MAX_10_EXP && Self::ENABLE {
             let abs_e = e.unsigned_abs() as u64;
-            let mut val = abs_e % 10 + b'0' as u64;
-            if abs_e >= 10 {
-                val = (val << 8) | (abs_e / 10 % 10 + b'0' as u64);
-            }
-            if abs_e >= 100 {
-                val = (val << 8) | (abs_e / 100 + b'0' as u64);
-            }
+
+            // Left-aligning a two-digit exponent pads it with the '0' byte 4 holds.
+            // Rust port: if `e+d`, keep the 2nd byte null for fast identification in the SIMD path.
+            let val = if abs_e >= 10 {
+                let ddd = if abs_e < 100 { abs_e * 10 } else { abs_e };
+                (ddd / 100 + b'0' as u64)
+                    | ((ddd / 10 % 10 + b'0' as u64) << 8)
+                    | ((ddd % 10 + b'0' as u64) << 16)
+            } else {
+                (abs_e + b'0' as u64) | ((b'0' as u64) << 16)
+            };
+
+            // Rust port: we allow `e+d`; len may be only 3.
             let len = 3 + (abs_e >= 10) as u64 + (abs_e >= 100) as u64;
-            data[(e + Self::OFFSET) as usize] = (len << 48)
+
+            // Bytes: 'e', sign, three digits, '.', '0', length.
+            // The float emitters insert an entry whole and add their last digit to
+            // the '0' in byte 4, so the point and the zero their shuffles need ride
+            // along and the length lands in a register byte nothing reads; the
+            // double path stores all eight bytes and returns past `len` of them.
+            data[(e + Self::OFFSET) as usize] = (len << 56)
+                | ((b'0' as u64) << 48)
+                | ((b'.' as u64) << 40)
                 | (val << 16)
-                | (if e >= 0 { b'+' as u64 } else { b'-' as u64 } << 8)
-                | b'e' as u64;
+                | ((if e >= 0 { b'+' } else { b'-' } as u64) << 8)
+                | (b'e' as u64);
+
             e += 1;
         }
 
@@ -624,22 +700,32 @@ impl ExpStringTable {
     }
 }
 
-// Shuffle vectors to build strings for exponential notation.
+// Shuffle vectors to build float strings in both fixed and exponential
+// notation.
 //
-// Byte positions in the source register assembled by write_exp_float_simd:
+// Byte positions in the source register assembled by write_float_simd:
 //   bytes [0, exp_pos):              BCD ASCII digits (reversed)
 //   bytes [exp_pos, exp_pos + 4):    exponent string "e±NN"
 //   byte  last_digit_pos:            rounded last digit
 //   byte  point_pos:                 '.'
+//   byte  zero_pos:                  '0', repeated by the shuffle for fixed
+//                                    notation's leading zeros and its
+//                                    integer-part padding
 //
 // The shuffle length (max 14) is stored in byte 15; the corresponding output
 // byte is past the string and ignored by the caller.
+//
+// Entries cover both output shapes so that choosing between them is a clamped
+// index rather than a branch: slots [0, sci_slot) hold the fixed layout for
+// each dec_exp in [min_fixed_dec_exp, max_fixed_dec_exp], and sci_slot holds
+// the exponential layout. Keep it branchless: floats reach the fixed range
+// often enough that predicting the shape costs more than emitting it.
 #[repr(C, align(16))]
-struct ExpFloatShuffleTable {
-    data: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
+struct FloatShuffleTable {
+    data: [u8; Self::DATA_LEN],
 }
 
-struct ExpFloatShuffleTableEntry {
+struct FloatShuffleTableEntry {
     #[cfg_attr(
         not(any(
             all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
@@ -651,90 +737,347 @@ struct ExpFloatShuffleTableEntry {
     length: u8,
 }
 
-impl ExpFloatShuffleTable {
+// Source-register positions of the significand digits, msb first.
+struct FloatShuffleTableSigShuffle {
+    pos: [u8; f32::MAX_DIGITS10 as usize],
+    len: i32,
+}
+
+impl FloatShuffleTableSigShuffle {
+    const fn new(num_digits: i32, has_last_digit: bool, has_extra_digit: bool) -> Self {
+        let mut pos = [0u8; f32::MAX_DIGITS10 as usize];
+        // Always the full padded BCD in the significand plus a last-digit char;
+        // for !has_extra_digit its leading '0' is shown.
+        let mut len = if has_last_digit {
+            FloatShuffleTable::NUM_BCD_DIGITS
+        } else {
+            num_digits - 1
+        } + has_extra_digit as i32;
+        if len < 1 {
+            len = 1;
+        }
+
+        let leading_pos = if has_extra_digit { 7 } else { 6 };
+        let mut j = 0;
+        while j < len - has_last_digit as i32 {
+            pos[j as usize] = (leading_pos - j) as u8;
+            j += 1;
+        }
+
+        if has_last_digit {
+            pos[len as usize - 1] = FloatShuffleTable::LAST_DIGIT_POS;
+        }
+
+        Self { pos, len }
+    }
+}
+
+impl FloatShuffleTable {
     const ENABLE: bool = cfg!(any(
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     )) && ExpStringTable::ENABLE;
 
+    const DATA_LEN: usize = if Self::ENABLE {
+        Self::NUM_SHUFFLES as usize * 16
+    } else {
+        0
+    };
+
     const EXP_POS: u8 = 8;
     const LAST_DIGIT_POS: u8 = 12;
     const POINT_POS: u8 = 13;
+    const ZERO_POS: u8 = 14;
+    const NUM_BCD_DIGITS: i32 = 8;
+    const NUM_VARIANTS: i32 = (Self::NUM_BCD_DIGITS + 1) * 2;
+    const SCI_SLOT: i32 = f32::FIXED_DEC_EXP
+        .end()
+        .wrapping_sub(*f32::FIXED_DEC_EXP.start())
+        + 1;
+    const NUM_SLOTS: i32 = Self::SCI_SLOT + 1;
+    const NUM_SHUFFLES: i32 = Self::NUM_SLOTS * Self::NUM_VARIANTS;
 
-    unsafe fn get_entry(
+    // A `dec_exp` outside the fixed range clamps onto the scientific slot.
+    const unsafe fn get_entry(
         &self,
+        dec_exp: i32,
         num_digits: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
-    ) -> ExpFloatShuffleTableEntry {
-        let idx = (num_digits - 1) * 4 + i32::from(has_last_digit) * 2 + i32::from(has_extra_digit);
-        ExpFloatShuffleTableEntry {
+    ) -> FloatShuffleTableEntry {
+        let rel = dec_exp.wrapping_sub(*f32::FIXED_DEC_EXP.start()) as u32;
+        let slot = if rel < (Self::SCI_SLOT as u32) {
+            rel
+        } else {
+            Self::SCI_SLOT as u32
+        };
+
+        let sig_index = if has_last_digit {
+            Self::NUM_BCD_DIGITS
+        } else {
+            num_digits - 1
+        };
+        let idx = (slot as i32) * Self::NUM_VARIANTS + sig_index * 2 + has_extra_digit as i32;
+        FloatShuffleTableEntry {
             shuffle: unsafe { self.data.as_ptr().add(idx as usize * 16) },
-            length: *unsafe { self.data.get_unchecked(idx as usize * 16 + 15) },
+            length: unsafe { *self.data.as_ptr().add(idx as usize * 16 + 15) },
         }
     }
 
     const fn new() -> Self {
-        let mut data = [0u8; if Self::ENABLE { 32 * 16 } else { 0 }];
-
+        let mut data = [0; Self::DATA_LEN];
         let mut idx = 0;
-        while idx < 32 && Self::ENABLE {
-            let num_digits = (idx >> 2) + 1;
-            let has_last_digit = ((idx >> 1) & 1) != 0;
-            let has_extra_digit = (idx & 1) != 0;
+        while idx < Self::NUM_VARIANTS && Self::ENABLE {
+            let sig_index = idx >> 1;
 
-            let out = idx * 16;
-            let mut i = 0;
-            while i < 16 {
-                data[out + i] = 0x80; // shuffle high bit: output 0
-                i += 1;
-            }
-            let leading_digit_pos = if has_extra_digit { 7 } else { 6 };
-            let mut length = 0;
-            if has_last_digit {
-                // Always 8 BCD chars in the significand plus a last-digit char;
-                // for !has_extra_digit the leading '0' of the 8-digit padded
-                // BCD is shown.
-                data[out + length] = leading_digit_pos;
-                length += 1;
-                data[out + length] = Self::POINT_POS;
-                length += 1;
-                let mut i = leading_digit_pos - 1;
-                loop {
-                    data[out + length] = i;
-                    length += 1;
-                    if i == 0 {
-                        break;
-                    }
-                    i -= 1;
-                }
-                data[out + length] = Self::LAST_DIGIT_POS;
-                length += 1;
-            } else {
-                length = num_digits + has_extra_digit as usize;
-                // Drop the '.' for single-digit output: "5e+02", not "5.0e+02".
-                if length == 2 {
-                    length = 1;
-                }
-                data[out] = leading_digit_pos;
-                data[out + 1] = Self::POINT_POS;
-                let mut i = 2;
-                while i < length {
-                    data[out + i] = leading_digit_pos + 1 - i as u8;
+            let s = FloatShuffleTableSigShuffle::new(
+                sig_index + 1,
+                sig_index == Self::NUM_BCD_DIGITS,
+                (idx & 1) != 0,
+            );
+
+            let mut slot = 0;
+            while slot < Self::NUM_SLOTS {
+                let out = ((slot * Self::NUM_VARIANTS + idx) * 16) as usize;
+
+                // Shuffle high bit: output 0.
+                let mut i = 0;
+                while i < 16 {
+                    data[out + i] = 0x80;
                     i += 1;
                 }
+
+                let dec_exp = slot.wrapping_add(*f32::FIXED_DEC_EXP.start());
+                let mut len = 0;
+
+                // Every shape is an integer part, '.', a fraction, and for the
+                // exponential slot a trailing exponent. Only the split point differs;
+                // when it falls left of the digits there is no integer digit, just a
+                // '0', and the shortfall becomes leading zeros in the fraction.
+                let int_digits = if slot == Self::SCI_SLOT {
+                    1
+                } else {
+                    dec_exp + 1
+                };
+                let split = if int_digits > 0 { int_digits } else { 0 };
+                let lead_zeros = split - int_digits;
+                let int_sig = if split < s.len { split } else { s.len }; // integer digits present
+
+                if int_digits < 1 {
+                    data[out + len] = Self::ZERO_POS;
+                    len += 1;
+                }
+
+                let mut j = 0;
+                while j < int_sig {
+                    data[out + len] = s.pos[j as usize];
+                    len += 1;
+                    j += 1;
+                }
+
+                let mut z = int_sig;
+                while z < split {
+                    data[out + len] = Self::ZERO_POS;
+                    len += 1;
+                    z += 1;
+                }
+
+                // A significand that ends at or before the split leaves no fraction,
+                // so the point is dropped: "5e+02", not "5.0e+02".
+                if split < s.len {
+                    data[out + len] = Self::POINT_POS;
+                    len += 1;
+
+                    let mut z = 0;
+                    while z < lead_zeros {
+                        data[out + len] = Self::ZERO_POS;
+                        len += 1;
+                        z += 1;
+                    }
+
+                    let mut j = split;
+                    while j < s.len {
+                        data[out + len] = s.pos[j as usize];
+                        len += 1;
+                        j += 1;
+                    }
+                }
+                // Rust port: print out `.0` in fixed (i.e. non-scientific) representation.
+                else if slot != Self::SCI_SLOT {
+                    data[out + len] = Self::POINT_POS;
+                    len += 1;
+                    data[out + len] = Self::ZERO_POS;
+                    len += 1;
+                }
+
+                if slot == Self::SCI_SLOT {
+                    let mut i = 0;
+                    while i < 4 {
+                        data[out + len] = Self::EXP_POS + i;
+                        len += 1;
+                        i += 1;
+                    }
+                }
+
+                data[out + 15] = len as u8;
+                slot += 1;
             }
-            let mut i = 0;
-            while i < 4 {
-                data[out + length] = Self::EXP_POS + i;
-                length += 1;
-                i += 1;
-            }
-            data[out + 15] = length as u8;
+
             idx += 1;
         }
 
-        ExpFloatShuffleTable { data }
+        Self { data }
+    }
+}
+
+struct FixedLayoutTable {
+    data: [FixedLayoutTableEntry; Self::NUM_ENTRIES as usize],
+}
+
+#[repr(C, align(16))]
+#[derive(Default)]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+struct FixedLayoutTableEntryShuffle([[u8; 16]; 2]);
+
+#[repr(C)]
+#[cfg_attr(
+    all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+    repr(align(64))
+)]
+#[cfg_attr(all(target_arch = "aarch64", not(opt_level = "s")), repr(align(32)))]
+struct FixedLayoutTableEntry {
+    // pshufb table mapping BCD bytes to their output slots; the decimal-point
+    // slot (if any) holds a zero-marker (high bit set). Indexed by extra_digit.
+    // Read via aligned load (_mm_load_si128), so must be 16-byte aligned.
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    shuffle: FixedLayoutTableEntryShuffle,
+
+    // Byte offset past leading "0.00..." before first significant digit.
+    start_pos: u8,
+    point_pos: u8,
+    // Start position for shifting digits right by one to insert the point.
+    shift_pos: u8,
+
+    // Buffer-relative position of the last_digit byte, indexed by
+    // has_extra_digit. Only used for bcd_size == 16 (doubles).
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    last_digit_pos: [u8; 2],
+
+    // Offset past the end of fixed-notation output, indexed by sig length - 1.
+    end_pos: [u8; f64::MAX_DIGITS10 as usize],
+}
+
+impl FixedLayoutTableEntry {
+    const fn new(dec_exp: i32) -> Self {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+        let mut shuffle = FixedLayoutTableEntryShuffle([[0; 16]; 2]);
+
+        let start_pos = (if dec_exp < -0 { 1 - dec_exp } else { 0 }) as u8;
+        let point_pos = (if dec_exp >= 0 { 1 + dec_exp } else { 1 }) as u8;
+        let shift_pos = point_pos + (dec_exp >= 0) as u8;
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+        let mut last_digit_pos = [0; 2];
+
+        let mut end_pos = [0; f64::MAX_DIGITS10 as usize];
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+        {
+            const BCD_SIZE: i32 = 16;
+            let mut extra = 0;
+            while extra < 2 {
+                let len = BCD_SIZE + extra as i32 - 1;
+                last_digit_pos[extra] = len as u8 + (0 <= dec_exp && dec_exp < len) as u8;
+                extra += 1;
+            }
+
+            // Build the shuffle tables from natural-order BCD (to_digits puts BCD[k]
+            // at byte k). extra_digit == 0 drops the leading zero, so digits start at
+            // BCD[!extra]; point_slot gets a pshufb zero-marker (0xFF) for the point.
+            let point_slot = if dec_exp >= 0 && dec_exp <= 14 {
+                1 + dec_exp
+            } else {
+                128
+            };
+            let mut extra = 0;
+            while extra < 2 {
+                let mut bcd_idx = 1 - extra as u8;
+                let mut i = 0;
+                while i < BCD_SIZE {
+                    if i == point_slot {
+                        shuffle.0[extra][i as usize] = 0xFF;
+                    } else {
+                        shuffle.0[extra][i as usize] = bcd_idx;
+                        bcd_idx = bcd_idx.wrapping_add(1);
+                    }
+                    i += 1;
+                }
+                extra += 1;
+            }
+        }
+
+        let mut n = 1;
+        while n <= f64::MAX_DIGITS10 as i32 {
+            let mut end_pos_n = n;
+            if dec_exp >= 0 {
+                end_pos_n = if n > dec_exp + 1 { n + 1 } else { dec_exp + 1 };
+            }
+
+            end_pos[n as usize - 1] = end_pos_n as u8;
+            n += 1;
+        }
+
+        Self {
+            #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+            shuffle,
+
+            start_pos,
+            point_pos,
+            shift_pos,
+
+            #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+            last_digit_pos,
+
+            end_pos,
+        }
+    }
+}
+
+impl FixedLayoutTable {
+    const MIN_DEC_EXP: i32 = *f32::FIXED_DEC_EXP.start();
+    const MAX_DEC_EXP: i32 = *f64::FIXED_DEC_EXP.end();
+    const NUM_ENTRIES: i32 = Self::MAX_DEC_EXP.wrapping_sub(Self::MIN_DEC_EXP) + 1;
+
+    fn get(&self, dec_exp: i32) -> &FixedLayoutTableEntry {
+        debug_assert!(
+            (Self::MIN_DEC_EXP..=Self::MAX_DEC_EXP).contains(&dec_exp),
+            "{}",
+            dec_exp
+        );
+
+        // Ironically, unlike `.get_unchecked`, "proper" array-based indexing makes `no-panic` happy. Go figure!
+        &self.data[(dec_exp - Self::MIN_DEC_EXP) as usize]
+    }
+
+    const fn new() -> Self {
+        let mut data: [MaybeUninit<FixedLayoutTableEntry>; Self::NUM_ENTRIES as usize] =
+            unsafe { MaybeUninit::uninit().assume_init() };
+
+        let mut dec_exp = Self::MIN_DEC_EXP;
+        while dec_exp <= Self::MAX_DEC_EXP {
+            data[(dec_exp - Self::MIN_DEC_EXP) as usize] =
+                MaybeUninit::new(FixedLayoutTableEntry::new(dec_exp));
+            dec_exp += 1;
+        }
+
+        Self {
+            data: unsafe {
+                mem::transmute::<
+                    [MaybeUninit<FixedLayoutTableEntry>; 22],
+                    [FixedLayoutTableEntry; 22],
+                >(data)
+            },
+        }
     }
 }
 
@@ -775,15 +1118,27 @@ static DIGITS2: Digits2 = Digits2(
        8081828384858687888990919293949596979899",
 );
 
-// Converts value in the range [0, 100) to a string. GCC generates a bit better
-// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+// Converts value in the range [0, 100) to a string. ~~GCC~~ Clang generates a bit better
+// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc // https://rust.godbolt.org/z/7fMf4jxYv).
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn digits2(value: usize) -> &'static u16 {
+unsafe fn digits2(value: usize) -> &'static [u8; 2] {
     debug_assert!(value < 100);
 
-    #[allow(clippy::cast_ptr_alignment)]
+    unsafe { &*(DIGITS2.0.as_ptr().add(value * 2) as *const [u8; 2]) }
+}
+
+// Writes chars `a` and `b` to `out` and returns the position after them.
+#[inline]
+unsafe fn write2(out: *mut u8, a: u8, b: u8) -> *mut u8 {
+    #[cfg(target_endian = "little")]
+    let v = a as u16 | ((b as u16) << 8);
+
+    #[cfg(target_endian = "big")]
+    let v = b as u16 | ((a as u16) << 8);
+
     unsafe {
-        &*DIGITS2.0.as_ptr().cast::<u16>().add(value)
+        out.copy_from_nonoverlapping(ptr::addr_of!(v).cast(), 2);
+        out.add(2)
     }
 }
 
@@ -814,10 +1169,17 @@ const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(miri))))]
 const NEG10: u32 = (1 << 8) - 10;
 
-const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
+const ZEROS: u64 = 0x0101010101010101u64 * b'0' as u64;
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+#[repr(C, align(16))]
+struct AlignedU128(u128);
 
 #[repr(C, align(64))]
 struct Data {
+    // Keep first: arm64 folds a register index into ldrb only at offset zero.
+    exp_shifts: ExpShiftTable,
+
     threshold: AArch64Mem<1_000_000_000_000_000>,
     // +6 is needed for boundary cases found by verify.py.
     biased_half: AArch64Mem<{ (1 << 63) + 6 }>,
@@ -831,18 +1193,20 @@ struct Data {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     multipliers16: int16x8_t,
 
-    // Ordered so that the values used to format floats fit in a single cache
-    // line.
+    // Ordered so the values used to format floats fit in a single cache line.
+    // Read via aligned load (_mm_load_si128), so must be 16-byte aligned.
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-    div100: u128,
+    div100: AlignedU128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10: u128,
+
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     neg100: u128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     neg10: u128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     bswap: u128,
+
     #[cfg(all(
         target_arch = "x86_64",
         target_feature = "sse2",
@@ -857,21 +1221,27 @@ struct Data {
         not(miri)
     ))]
     moddiv10: u128,
+
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10k: u128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     neg10k: u128,
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+
     zeros: u128,
 
-    exp_shifts: ExpShiftTable,
     exp_strings: ExpStringTable,
     pow10_significands: Pow10SignificandTable,
-    exp_float_shuffles: ExpFloatShuffleTable,
+    fixed_layouts: FixedLayoutTable,
+    float_shuffles: FloatShuffleTable,
+
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    shift_shuffle: [u8; 17],
 }
 
 impl Data {
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     const fn splat64(x: u64) -> u128 {
         ((x as u128) << 64) | x as u128
     }
@@ -903,6 +1273,8 @@ impl Data {
 }
 
 static STATIC_DATA: Data = Data {
+    exp_shifts: ExpShiftTable::new(),
+
     threshold: AArch64Mem::new(),
     biased_half: AArch64Mem::new(),
 
@@ -925,9 +1297,10 @@ static STATIC_DATA: Data = Data {
     },
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
-    div100: Data::splat32(DIV100_SIG),
+    div100: AlignedU128(Data::splat32(DIV100_SIG)),
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10: Data::splat16(((1u32 << 16) / 10 + 1) as u16),
+
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     neg100: Data::splat32(NEG100),
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
@@ -935,6 +1308,7 @@ static STATIC_DATA: Data = Data {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     bswap: Data::pack8(15, 14, 13, 12, 11, 10, 9, 8) as u128
         | (Data::pack8(7, 6, 5, 4, 3, 2, 1, 0) as u128) << 64,
+
     #[cfg(all(
         target_arch = "x86_64",
         target_feature = "sse2",
@@ -949,17 +1323,30 @@ static STATIC_DATA: Data = Data {
         not(miri)
     ))]
     moddiv10: Data::splat16(10 * (1 << 8) - 1),
+
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     div10k: Data::splat64(DIV10K_SIG as u64),
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     neg10k: Data::splat64(NEG10K as u64),
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
+
     zeros: Data::splat64(ZEROS),
 
-    exp_shifts: ExpShiftTable::new(),
     exp_strings: ExpStringTable::new(),
     pow10_significands: Pow10SignificandTable::new(),
-    exp_float_shuffles: ExpFloatShuffleTable::new(),
+    fixed_layouts: FixedLayoutTable::new(),
+    float_shuffles: FloatShuffleTable::new(),
+
+    // Shuffle indices for SIMD digit shift. Offset 0 = identity, offset 1 =
+    // shift left by 1 (drops the leading '0' of a 16-digit significand).
+    #[rustfmt::skip]
+    #[cfg(any(
+        all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    ))]
+    shift_shuffle: [
+        0, 1,  2,  3,  4,  5,  6,  7, 8,
+        9, 10, 11, 12, 13, 14, 15, 0
+    ],
 };
 
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
@@ -1115,8 +1502,8 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
             &*d
         };
 
-        // Evaluate the 4-digit limbs and arrange them such that we get a
-        // result which is in the correct order.
+        // Evaluate the 4-digit limbs and arrange them such that we get a result which
+        // is in the correct order.
         let abcd_efgh = (abcdefgh << 32)
             - ((10000u64 << 32) - 1) * ((abcdefgh * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
         let v: __m128i = to_bcd_4x4(_mm_set_epi64x(0, abcd_efgh as i64), d);
@@ -1130,13 +1517,13 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
 }
 
 struct DecDigits<Float: FloatTraits> {
-    digits: Float::DecDigitsType,
-    // `unshuffled` is the byte-reversed BCD vector used by write_exp_float_simd.
+    // `unshuffled` is the byte-reversed BCD vector used by write_float_simd.
     #[cfg(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     ))]
     unshuffled: Float::DecUnshuffledType,
+    digits: Float::DecDigitsType,
     num_digits: usize,
 }
 
@@ -1166,22 +1553,22 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
-        unsafe {
-            let unshuffled_digits = to_unshuffled_digits(value, d);
-            let digits: uint8x16_t = vrev64q_u8(unshuffled_digits);
-            let str: uint16x8_t = vaddq_u16(
+        let unshuffled_digits = to_unshuffled_digits(value, d);
+        let digits = unsafe { vrev64q_u8(unshuffled_digits) };
+        let str = unsafe {
+            vaddq_u16(
                 vreinterpretq_u16_u8(digits),
                 vreinterpretq_u16_s8(vdupq_n_s8(b'0' as i8)),
-            );
-            let is_not_zero: uint16x8_t =
-                vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
-            let nonzero_mask: u64 =
-                vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0);
-            DecDigits {
-                digits: str,
-                unshuffled: (),
-                num_digits: 16 - (nonzero_mask.leading_zeros() as usize >> 2),
-            }
+            )
+        };
+        let nonzero_mask = unsafe {
+            let is_not_zero = vreinterpretq_u16_u8(vcgtzq_s8(vreinterpretq_s8_u8(digits)));
+            vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(is_not_zero, 4)), 0)
+        };
+        DecDigits {
+            unshuffled: (),
+            digits: str,
+            num_digits: 16 - (nonzero_mask.leading_zeros() as usize >> 2),
         }
     }
 
@@ -1194,20 +1581,17 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
             let div10k = _mm_load_si128(ptr::addr_of!(d.div10k).cast::<__m128i>());
             let neg10k = _mm_load_si128(ptr::addr_of!(d.neg10k).cast::<__m128i>());
             let x: __m128i = _mm_set_epi64x(i64::from(hi), i64::from(lo));
-            #[cfg_attr(target_feature = "sse4.1", allow(unused_mut))]
-            let mut y: __m128i = _mm_add_epi64(
+            let y: __m128i = _mm_add_epi64(
                 x,
                 _mm_mul_epu32(neg10k, _mm_srli_epi64(_mm_mul_epu32(x, div10k), DIV10K_EXP)),
             );
 
             // Shuffle to ensure correctly ordered result from SSE2 path.
             #[cfg(not(target_feature = "sse4.1"))]
-            {
-                y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
-            }
+            let y = _mm_shuffle_epi32(y, _MM_SHUFFLE(0, 1, 2, 3));
 
             #[cfg_attr(not(target_feature = "sse4.1"), allow(unused_mut))]
-            let mut bcd: __m128i = to_bcd_4x4(y, d);
+            let bcd: __m128i = to_bcd_4x4(y, d);
             let zeros = _mm_load_si128(ptr::addr_of!(d.zeros).cast::<__m128i>());
 
             // Computed against current bcd (rather than the post-bswap bcd) so
@@ -1223,17 +1607,15 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
             };
 
             #[cfg(target_feature = "sse4.1")]
-            {
-                bcd = _mm_shuffle_epi8(
-                    bcd,
-                    _mm_load_si128(ptr::addr_of!(d.bswap).cast::<__m128i>()),
-                ); // SSSE3
-            }
+            let bcd = _mm_shuffle_epi8(
+                bcd,
+                _mm_load_si128(ptr::addr_of!(d.bswap).cast::<__m128i>()),
+            ); // SSSE3
 
             DecDigits {
-                digits: _mm_or_si128(bcd, zeros),
                 #[cfg(target_feature = "sse4.1")]
                 unshuffled: (),
+                digits: _mm_or_si128(bcd, zeros),
                 num_digits: len as usize,
             }
         }
@@ -1256,23 +1638,21 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
             0
         };
         DecDigits {
-            digits: unshuffled_bcd.swap_bytes() + ZEROS,
             unshuffled: bcd_xmm,
+            digits: unshuffled_bcd.swap_bytes() + ZEROS,
             num_digits: len as usize,
         }
     }
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
-        // Inline to_bcd8's NEON body so we can return the unshuffled vector
-        // too; the exponential-notation path uses it to skip the
-        // simd->gpr->bswap->simd roundtrip needed to materialize `digits`.
+        // Inline to_bcd8's NEON body so we can return the unshuffled vector too;
+        // the exponential-notation path uses it to skip the simd->gpr->bswap->simd
+        // roundtrip needed to materialize `digits`.
         let abcd_efgh = value + u64::from(NEG10K) * ((value * u64::from(DIV10K_SIG)) >> DIV10K_EXP);
-        let unshuffled: uint8x16_t = unsafe {
-            let input: int32x4_t =
-                vcombine_s32(vreinterpret_s32_u64(vcreate_u64(abcd_efgh)), vdup_n_s32(0));
-            to_bcd_4x4(input, d)
-        };
+        let input =
+            unsafe { vcombine_s32(vreinterpret_s32_u64(vcreate_u64(abcd_efgh)), vdup_n_s32(0)) };
+        let unshuffled = to_bcd_4x4(input, d);
         let unshuffled_bcd =
             unsafe { vget_lane_u64(vreinterpret_u64_u8(vget_low_u8(unshuffled)), 0) };
         let len = if unshuffled_bcd != 0 {
@@ -1281,8 +1661,8 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
             0
         };
         DecDigits {
-            digits: unshuffled_bcd.swap_bytes() + ZEROS,
             unshuffled,
+            digits: unshuffled_bcd.swap_bytes() + ZEROS,
             num_digits: len as usize,
         }
     }
@@ -1300,21 +1680,95 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
     }
 }
 
+// Writes `digits` to `buffer`, dropping the leading '0' when drop_leading_zero
+// is set. On SIMD, folds the shift into the digit shuffle to avoid a
+// dependent 16-byte memmove.
+#[inline]
+unsafe fn write_digits_64(
+    buffer: *mut u8,
+    digits: <f64 as FloatTraits>::DecDigitsType,
+    drop_leading_zero: bool,
+    #[allow(unused_variables)] d: &Data,
+) {
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
+        all(target_arch = "aarch64", target_feature = "neon", not(miri)),
+    )))]
+    unsafe {
+        buffer
+            .cast::<<f64 as FloatTraits>::DecDigitsType>()
+            .write_unaligned(digits);
+        buffer.copy_from(
+            buffer.add(drop_leading_zero as usize),
+            core::mem::size_of_val(&digits),
+        );
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+    unsafe {
+        let shuffle = vld1q_u8(
+            ptr::addr_of!(d.shift_shuffle)
+                .cast::<u8>()
+                .add(drop_leading_zero as usize)
+                .cast(),
+        );
+        let shifted = vqtbl1q_u8(vreinterpretq_u8_u16(digits), shuffle);
+        vst1q_u8(buffer, shifted);
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+    unsafe {
+        let shuffle = _mm_loadu_si128(
+            ptr::addr_of!(d.shift_shuffle)
+                .add(drop_leading_zero as usize)
+                .cast(),
+        );
+        _mm_storeu_si128(buffer.cast(), _mm_shuffle_epi8(digits, shuffle));
+    }
+}
+
+#[inline]
+unsafe fn write_digits_32(
+    buffer: *mut u8,
+    digits: <f32 as FloatTraits>::DecDigitsType,
+    drop_leading_zero: bool,
+    _d: &Data,
+) {
+    let shift = drop_leading_zero as u32 * 8;
+
+    #[cfg(target_endian = "little")]
+    let digits = digits >> shift;
+    #[cfg(target_endian = "big")]
+    let digits = digits << shift;
+
+    unsafe {
+        buffer
+            .cast::<<f32 as FloatTraits>::DecDigitsType>()
+            .write_unaligned(digits);
+    }
+}
+
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn write_exp_float_simd_32(
+unsafe fn write_float_simd_32(
     buffer: *mut u8,
     dig: &DecDigits<f32>,
     last_digit: i32,
     has_last_digit: bool,
     has_extra_digit: bool,
-    exp_data: u64,
+    dec_exp: i32,
     d: &Data,
 ) -> *mut u8 {
-    // Packed for insertion into lane 1: byte 0 of `tail` lands at register byte
-    // exp_pos (8), so the exp string fills exp_pos..exp_pos+3; the prefix
-    // shifts place '0'+last_digit at last_digit_pos (12) and '.' at point_pos
-    // (13).
-    let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit as u32;
+    // Inserted whole into lane 1: byte 0 of the entry lands at register byte
+    // exp_pos (8), so the exp string fills exp_pos..exp_pos+3, its '.' and '0'
+    // land at point_pos (13) and zero_pos (14), and its '0' at last_digit_pos
+    // (12) only has the last digit added to it. The entry's length ends up in
+    // byte 15, which no shuffle reads; the output length comes from the shuffle
+    // entry.
+    let exp_data = *unsafe {
+        d.exp_strings
+            .data
+            .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize)
+    };
     #[cfg_attr(
         not(any(
             all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
@@ -1322,10 +1776,14 @@ unsafe fn write_exp_float_simd_32(
         )),
         allow(unused_variables)
     )]
-    let tail = exp_data | (u64::from(prefix) << 32);
+    let tail = exp_data + ((last_digit as u64) << 32);
     let entry = unsafe {
-        d.exp_float_shuffles
-            .get_entry(dig.num_digits as i32, has_last_digit, has_extra_digit)
+        d.float_shuffles.get_entry(
+            dec_exp,
+            dig.num_digits as i32,
+            has_last_digit,
+            has_extra_digit,
+        )
     };
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
@@ -1350,12 +1808,67 @@ unsafe fn write_exp_float_simd_32(
         vst1q_u8(buffer, out);
     }
 
-    let length = entry.length as usize - usize::from((exp_data & 0xff000000) == 0);
-    unsafe { buffer.add(length) }
+    unsafe {
+        buffer
+            .add(entry.length as usize)
+            // Rust port: if the exponent is `e+d`, then last byte needs to be omitted.
+            // In this scenario the byte is null; see the ExpStringTable construction.
+            .sub((*buffer.add(entry.length as usize - 1) == 0) as usize)
+    }
 }
 
-struct ToDecimalResult {
-    sig: i64,
+#[cfg_attr(feature = "no-panic", no_panic)]
+unsafe fn write_float_simd_64(
+    _buffer: *mut u8,
+    _dig: &DecDigits<f64>,
+    _last_digit: i32,
+    _has_last_digit: bool,
+    _has_extra_digit: bool,
+    _dec_exp: i32,
+    _d: &Data,
+) -> *mut u8 {
+    ptr::null_mut()
+}
+
+// Writes the exponent as 'e', a sign and the digits (e.g. e+5).
+// Rust port: unlike upstream, exponents are not at-least-two digits (e+5 instead of e+05)
+#[cfg_attr(feature = "no-panic", no_panic)]
+#[inline]
+unsafe fn write_exp<Float>(mut buffer: *mut u8, dec_exp: i32) -> *mut u8
+where
+    Float: FloatTraits,
+{
+    let sign = if dec_exp >= 0 { b'+' } else { b'-' };
+    let mut abs_exp = dec_exp.unsigned_abs();
+
+    // Rust port: allow single-digit exponent -- writing `e[sign]` at the end.
+    let start = buffer;
+    buffer = unsafe { buffer.add(1 + (abs_exp >= 10) as usize) };
+
+    if Float::MAX_10_EXP >= 100 {
+        let hi = if USE_UMUL128_HI64 {
+            umul128_hi64(abs_exp as u64, 0x290000000000000) as u32
+        } else {
+            (abs_exp * DIV100_SIG) >> DIV100_EXP
+        };
+
+        unsafe {
+            *buffer = b'0' + hi as u8; // hundreds (0-3)
+            buffer = buffer.add((abs_exp >= 100) as usize);
+        }
+
+        abs_exp -= hi * 100;
+    }
+
+    unsafe {
+        buffer.copy_from_nonoverlapping(digits2(abs_exp as usize).as_ptr(), 2);
+        write2(start, b'e', sign); // Rust port: Written after writing the exponent to overwrite the potential leading `0`
+        buffer.add(2)
+    }
+}
+
+struct ShortestDecimal {
+    sig: u64,
     exp: i32,
     last_digit: u8,
     has_last_digit: bool,
@@ -1363,10 +1876,16 @@ struct ToDecimalResult {
 
 // Here be 🐉s.
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
-// representation, where bin_exp = raw_exp - exp_offset.
+// representation, where bin_exp = raw_exp - exp_offset. The smallest normal may
+// be passed as irregular without affecting the result.
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_decimal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool, d: &Data) -> ToDecimalResult
+fn to_shortest_decimal<Float, UInt>(
+    bin_sig: UInt,
+    raw_exp: i64,
+    regular: bool,
+    d: &Data,
+) -> ShortestDecimal
 where
     Float: FloatTraits,
     UInt: traits::UInt,
@@ -1375,27 +1894,29 @@ where
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
     const EXTRA_SHIFT: usize = ExpShiftTable::EXTRA_SHIFT;
 
-    if !regular {
+    if unlikely(!regular) {
         let dec_exp = compute_dec_exp(bin_exp as i32, false);
         let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
         let pow10 = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) };
-        let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
+
+        // Cast to 64 bits: for float, bin_sig << shift can exceed 32 bits.
+        let p = umul192_hi128(pow10.hi, pow10.lo, bin_sig.into() << shift);
 
         let mut integral = p.hi >> EXTRA_SHIFT;
         let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
         let half_ulp = pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize);
-        let round_up = half_ulp > u64::MAX - fractional;
+        let round_up = half_ulp > !0u64 - fractional;
         let round_down = (half_ulp >> 1) > fractional;
         integral += u64::from(round_up);
 
-        let mut digit = umul128_add_hi64(fractional, 10, (1 << 63) - 1) as i32;
+        let mut digit = umul128_add_hi64(fractional, 10, (1u64 << 63) - 1) as i32;
         let lo = umul128_add_hi64(fractional.wrapping_sub(half_ulp >> 1), 10, !0) as i32;
         if digit < lo {
             digit = lo;
         }
-        return ToDecimalResult {
-            sig: integral as i64,
+        return ShortestDecimal {
+            sig: integral,
             exp: dec_exp,
             last_digit: digit as u8,
             has_last_digit: !(round_up || round_down),
@@ -1428,7 +1949,7 @@ where
     } else {
         compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
     };
-    let even = UInt::from(1) - (bin_sig & UInt::from(1));
+    let even: u64 = (UInt::from(1) - (bin_sig & UInt::from(1))).into();
 
     if num_bits == 32 {
         const EXTRA_SHIFT: usize = 34;
@@ -1439,17 +1960,17 @@ where
         let mut integral = p >> EXTRA_SHIFT;
         let fractional = p & ((1u64 << EXTRA_SHIFT) - 1);
 
-        let half_ulp = (pow10_hi >> (65 - shift as usize)) + even.into();
+        let half_ulp = (pow10_hi >> (65 - shift as usize)) + even;
         let round_up = ((fractional + half_ulp) >> EXTRA_SHIFT) != 0;
         let round_down = half_ulp > fractional;
         integral += u64::from(round_up);
 
         let mut digit = ((fractional * 10 + (1u64 << (EXTRA_SHIFT - 1))) >> EXTRA_SHIFT) as i32;
-        if fractional == (1u64 << (EXTRA_SHIFT - 2)) {
+        if unlikely(fractional == (1u64 << (EXTRA_SHIFT - 2))) {
             digit = 2; // Round 2.5 to 2.
         }
-        return ToDecimalResult {
-            sig: integral as i64,
+        return ShortestDecimal {
+            sig: integral,
             exp: dec_exp,
             last_digit: digit as u8,
             has_last_digit: !(round_up || round_down),
@@ -1459,7 +1980,7 @@ where
     // An optimization by Xiang JunBo:
     // Scale by 10**(-dec_exp-1) to directly produce the shorter candidate
     // (15-16 digits), deriving the extra digit from the fractional part.
-    // This eliminates div10 from the critical path.
+    // This eliminates division by 10 from the critical path.
     //
     // value = 5.0507837461e-27
     // next  = 5.0507837461000010e-27
@@ -1470,48 +1991,48 @@ where
     //
     // fractional = fractional' * 2**64 = 5818079786399166407
     //
-    //    5050783746100000.0       c               upper    5050783746100001.0
-    //             s              l|   L             |               S
-    // ──┬────┬────┼────┬────┬────┼*───┼────┬────┬───*┬────┬────┬────┼─*──┬───
+    //    5050783746100000.0       c                        5050783746100001.0
+    //            d0             d1|  u1                            u0
+    // ──┬────┬────┼────┬────┬────┼*───┼────┬────┬────┬────┬────┬────┼─*──┬───
     //  .8   .9   .0   .1   .2   .3   .4   .5   .6   .7   .8   .9   .0 | .1
-    //           └─────────────────┼─────────────────┘                next
+    //           └─────────────────┬─────────────────┘                next
     //                            1ulp
     //
-    // s - shorter underestimate, S - shorter overestimate
-    // l - longer underestimate,  L - longer overestimate
+    // d0 - shorter underestimate, u0 - shorter overestimate
+    // d1 - longer underestimate,  u1 - longer overestimate
     let pow10 = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) };
     let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
 
     let mut integral = p.hi >> EXTRA_SHIFT;
     let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
-    let half_ulp = (pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize)) + even.into();
+    let half_ulp = (pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize)) + even;
     let round_up = fractional.wrapping_add(half_ulp) < fractional;
     let round_down = half_ulp > fractional;
     integral += u64::from(round_up); // Compute integral before digit.
 
     // Derive the extra digit from the fractional part (parallel with rounding).
     let mut digit = umul128_add_hi64(fractional, 10, d.biased_half.get()) as i32;
-    if fractional == (1u64 << 62) {
+    if unlikely(fractional == (1u64 << 62)) {
         digit = 2; // Round 2.5 to 2.
     }
-    ToDecimalResult {
-        sig: integral as i64,
+    ShortestDecimal {
+        sig: integral,
         exp: dec_exp,
         last_digit: digit as u8,
         has_last_digit: !(round_up || round_down),
     }
 }
 
+// It is slightly faster to return a pointer to the end than the size.
 /// Writes the shortest correctly rounded decimal representation of `value` to
 /// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn write<Float>(value: Float, mut buffer: *mut u8) -> *mut u8
+unsafe fn write<Float>(mut buffer: *mut u8, value: Float) -> *mut u8
 where
     Float: FloatTraits,
 {
     let bits = value.to_bits();
-    // It is beneficial to extract exponent and significand early.
     let bin_exp = Float::get_exp(bits); // binary exponent
     let bin_sig = Float::get_sig(bits); // binary significand
 
@@ -1534,124 +2055,186 @@ where
         10_000_000
     };
 
-    let mut dec;
-    if bin_exp == 0 {
+    let mut dec: ShortestDecimal;
+    if unlikely(!Float::is_normal(bin_exp)) {
         if bin_sig == Float::SigType::from(0) {
             return unsafe {
                 *buffer = b'0';
+                // Rust port: always emit `.0` for integers.
                 *buffer.add(1) = b'.';
                 *buffer.add(2) = b'0';
                 buffer.add(3)
             };
         }
-        dec = to_decimal::<Float, Float::SigType>(bin_sig, 1, true, d);
-        let mut dec_sig =
-            dec.sig * 10 + (-i64::from(dec.has_last_digit) & i64::from(dec.last_digit));
-        let mut dec_exp = dec.exp;
-        while dec_sig < threshold as i64 {
-            dec_sig *= 10;
-            dec_exp -= 1;
+
+        dec = to_shortest_decimal::<Float, Float::SigType>(bin_sig, 1, true, d);
+        // to_decimal's power of ten comes from the exponent alone, so a subnormal
+        // significand comes out short; clz estimates its length within a digit, and
+        // dec.sig is 0 for the smallest subnormals, which are all last digit.
+        let mut num_digits = compute_dec_exp(63 - (dec.sig | 1).leading_zeros() as i32, true);
+        num_digits += (dec.sig != 0) as i32;
+        num_digits += (dec.sig >= *unsafe { POW10S.get_unchecked(num_digits as usize) }) as i32;
+
+        let num_zeros = Float::MAX_DIGITS10 as i32 - 3 - num_digits;
+        if num_zeros >= 0 {
+            // Padding dec_sig, a digit longer than dec.sig, absorbs the last digit.
+            let dec_sig =
+                dec.sig * 10 + (-i64::from(dec.has_last_digit) & i64::from(dec.last_digit)) as u64;
+            dec = ShortestDecimal {
+                sig: dec_sig * *unsafe { POW10S.get_unchecked(num_zeros as usize) },
+                exp: dec.exp - num_zeros - 1,
+                last_digit: 0,
+                has_last_digit: false,
+            };
         }
-        let d = div10(dec_sig as u64);
-        let last_digit = dec_sig - d as i64 * 10;
-        dec = ToDecimalResult {
-            sig: d as i64,
-            exp: dec_exp,
-            last_digit: last_digit as u8,
-            has_last_digit: last_digit != 0,
-        };
     } else {
-        dec = to_decimal::<Float, Float::SigType>(
+        dec = to_shortest_decimal::<Float, Float::SigType>(
             bin_sig | Float::IMPLICIT_BIT,
             bin_exp,
             bin_sig != Float::SigType::from(0),
             d,
         );
     }
+
     let mut has_last_digit = dec.has_last_digit;
-    let has_extra_digit = dec.sig >= threshold as i64;
+    let has_extra_digit = dec.sig >= threshold;
     let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(has_extra_digit);
-    if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
-        dec.sig = 10 * dec.sig + (-i64::from(has_last_digit) & i64::from(dec.last_digit));
+    if unlikely(Float::NUM_BITS == 32 && dec.sig < 1_000_000) {
+        dec.sig = 10 * dec.sig + (-i64::from(has_last_digit) & i64::from(dec.last_digit)) as u64;
         has_last_digit = false;
         dec_exp -= 1;
     }
 
-    // Write significand.
-    let dig = Float::to_digits(dec.sig as u64, d);
+    let dig = Float::to_digits(dec.sig, d);
 
-    if Float::NUM_BITS == 32
-        && ExpFloatShuffleTable::ENABLE
-        && !Float::FIXED_DEC_EXP.contains(&dec_exp)
-    {
-        unsafe {
-            let exp_data = *d
-                .exp_strings
-                .data
-                .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize);
-            return Float::write_exp_float_simd(
+    if Float::NUM_BITS == 32 && FloatShuffleTable::ENABLE {
+        return unsafe {
+            Float::write_float_simd(
                 buffer,
                 &dig,
                 i32::from(dec.last_digit),
                 has_last_digit,
                 has_extra_digit,
-                exp_data,
+                dec_exp,
                 d,
-            );
-        }
+            )
+        };
     }
 
+    // Write significand/fixed.
+    let start = buffer;
     let bcd_size = if Float::NUM_BITS == 64 { 16 } else { 8 };
-    unsafe {
-        buffer
-            .add(usize::from(has_extra_digit))
-            .cast::<Float::DecDigitsType>()
-            .write_unaligned(dig.digits);
-        buffer
-            .add(usize::from(has_extra_digit) + bcd_size)
-            .write(b'0' + dec.last_digit);
+
+    if Float::FIXED_DEC_EXP.contains(&dec_exp) {
+        unsafe {
+            start.copy_from_nonoverlapping(ptr::addr_of!(d.zeros).cast(), 8); // For dec_exp < 0.
+
+            // Rust port: appears to be necessary due to longer non-scientific outputs?
+            // In some cases some digits are left uninitialised and causing UB.
+            start
+                .add(8)
+                .copy_from_nonoverlapping(ptr::addr_of!(d.zeros).cast(), 8);
+        }
+
+        let last_digit = b'0' + (-i64::from(has_last_digit) & i64::from(dec.last_digit)) as u8;
+        let num_digits = if has_last_digit {
+            bcd_size
+        } else {
+            dig.num_digits - 1
+        };
+
+        // Materialize the base early so the entry address is `base + idx*32`;
+        // otherwise Clang folds the offset in and adds a cycle to the idx chain.
+        #[allow(unused_mut)]
+        let mut fixed_layouts = ptr::addr_of!(d.fixed_layouts);
+        let fixed_layouts = unsafe {
+            #[cfg(all(target_arch = "aarch64", not(miri)))]
+            asm!("/*{0}*/", inout(reg) fixed_layouts);
+            &*fixed_layouts
+        };
+
+        let layout = fixed_layouts.get(dec_exp);
+        buffer = unsafe { buffer.add(layout.start_pos as usize) };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
+        if bcd_size == 16 {
+            return unsafe {
+                let digits = _mm_load_si128(ptr::addr_of!(dig.digits).cast());
+                let tbl =
+                    _mm_load_si128(layout.shuffle.0[has_extra_digit as usize].as_ptr().cast());
+                let out = _mm_shuffle_epi8(digits, tbl);
+
+                // Store the assembled digits in one go.
+                buffer.copy_from_nonoverlapping(ptr::addr_of!(out).cast(), bcd_size);
+
+                // The point can push BCD[15] outside the vector to buffer[16], so write
+                // it unconditionally (otherwise it's in-vector or overwritten below).
+                *buffer.add(bcd_size) = _mm_extract_epi8(digits, 15) as u8;
+                let point = start.add(layout.point_pos as usize);
+                *point = b'.';
+                *buffer.add(layout.last_digit_pos[has_extra_digit as usize] as usize) = last_digit;
+                buffer = buffer.add(
+                    *layout
+                        .end_pos
+                        .get_unchecked(num_digits + has_extra_digit as usize - 1)
+                        as usize,
+                );
+
+                // Rust port: always emit `.0` for integers.
+                if buffer == point {
+                    *buffer.add(1) = b'0';
+                    buffer.add(2)
+                } else {
+                    buffer
+                }
+            };
+        }
+
+        unsafe {
+            Float::write_digits(buffer, dig.digits, !has_extra_digit, d);
+            *buffer.add(bcd_size + has_extra_digit as usize - 1) = last_digit;
+        }
+
+        let point_pos = layout.point_pos;
+        return unsafe {
+            ptr::copy(
+                start.add(point_pos as usize),
+                start.add(layout.shift_pos as usize),
+                bcd_size,
+            );
+
+            let point = start.add(point_pos as usize);
+            *point = b'.';
+            buffer = buffer.add(
+                *layout
+                    .end_pos
+                    .get_unchecked(num_digits + has_extra_digit as usize - 1)
+                    as usize,
+            );
+
+            // Rust port: always emit `.0` for integers.
+            if buffer == point {
+                *buffer.add(1) = b'0';
+                buffer.add(2)
+            } else {
+                buffer
+            }
+        };
     }
-    let length = usize::from(has_extra_digit)
-        + if has_last_digit {
+
+    unsafe {
+        buffer = buffer.add(has_extra_digit as usize);
+        buffer.copy_from_nonoverlapping(ptr::addr_of!(dig.digits).cast(), bcd_size);
+        *buffer.add(bcd_size) = b'0' + dec.last_digit;
+        buffer = buffer.add(if has_last_digit {
             bcd_size + 1
         } else {
             dig.num_digits
-        }
-        - 1;
-
-    if Float::FIXED_DEC_EXP.contains(&dec_exp) {
-        if length as i32 - 1 <= dec_exp {
-            // 1234e7 -> 12340000000.0
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer, length);
-                ptr::write_bytes(buffer.add(length), b'0', dec_exp as usize + 3 - length);
-                *buffer.add(dec_exp as usize + 1) = b'.';
-                buffer.add(dec_exp as usize + 3)
-            };
-        } else if 0 <= dec_exp {
-            // 1234e-2 -> 12.34
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer, dec_exp as usize + 1);
-                *buffer.add(dec_exp as usize + 1) = b'.';
-                buffer.add(length + 1)
-            };
-        } else {
-            // 1234e-6 -> 0.001234
-            return unsafe {
-                ptr::copy(buffer.add(1), buffer.add((1 - dec_exp) as usize), length);
-                ptr::write_bytes(buffer, b'0', (1 - dec_exp) as usize);
-                *buffer.add(1) = b'.';
-                buffer.add((1 - dec_exp) as usize + length)
-            };
-        }
+        });
+        *start = *start.add(1);
+        *start.add(1) = b'.';
+        buffer = buffer.sub((buffer.sub(1) == start.add(1)) as usize);
     }
-
-    unsafe {
-        // 1234e30 -> 1.234e33
-        *buffer = *buffer.add(1);
-        *buffer.add(1) = b'.';
-    }
-    buffer = unsafe { buffer.add(length + usize::from(length > 1)) };
 
     // Write exponent.
     if ExpStringTable::ENABLE {
@@ -1660,46 +2243,19 @@ where
                 .data
                 .get_unchecked((dec_exp + ExpStringTable::OFFSET) as usize)
         };
-        let len = (exp_data >> 48) as usize;
+        let len = (exp_data >> 56) as usize;
         exp_data = exp_data.to_le();
         unsafe {
             ptr::copy_nonoverlapping(
                 ptr::addr_of!(exp_data).cast::<u8>(),
                 buffer,
-                if Float::MAX_10_EXP >= 100 { 5 } else { 4 },
+                if Float::MAX_10_EXP >= 100 { 8 } else { 4 },
             );
             return buffer.add(len);
         }
     }
-    let sign_ptr = buffer;
-    let e_sign = if dec_exp >= 0 {
-        (u16::from(b'+') << 8) | u16::from(b'e')
-    } else {
-        (u16::from(b'-') << 8) | u16::from(b'e')
-    };
-    buffer = unsafe { buffer.add(1) };
-    dec_exp = if dec_exp >= 0 { dec_exp } else { -dec_exp };
-    buffer = unsafe { buffer.add(usize::from(dec_exp >= 10)) };
-    if Float::MAX_10_EXP >= 100 {
-        // digit = dec_exp / 100
-        let digit = if USE_UMUL128_HI64 {
-            umul128_hi64(dec_exp as u64, 0x290000000000000) as u32
-        } else {
-            (dec_exp as u32 * DIV100_SIG) >> DIV100_EXP
-        };
-        unsafe {
-            *buffer = b'0' + digit as u8;
-        }
-        buffer = unsafe { buffer.add(usize::from(dec_exp >= 100)) };
-        dec_exp -= (digit * 100) as i32;
-    }
-    unsafe {
-        buffer
-            .cast::<u16>()
-            .write_unaligned(*digits2(dec_exp as usize));
-        sign_ptr.cast::<u16>().write_unaligned(e_sign.to_le());
-        buffer.add(2)
-    }
+
+    unsafe { write_exp::<Float>(buffer, dec_exp) }
 }
 
 /// Safe API for formatting floating point numbers to text.
@@ -1708,7 +2264,7 @@ where
 ///
 /// ```
 /// let mut buffer = zmij::Buffer::new();
-/// let printed = buffer.format_finite(1.234);
+/// let printed = buffer.format(1.234);
 /// assert_eq!(printed, "1.234");
 /// ```
 pub struct Buffer {
@@ -1727,11 +2283,6 @@ impl Buffer {
 
     /// Print a floating point number into this buffer and return a reference to
     /// its string representation within the buffer.
-    ///
-    /// # Special cases
-    ///
-    /// This function formats NaN as the string "NaN", positive infinity as
-    /// "inf", and negative infinity as "-inf" to match std::fmt.
     ///
     /// If your input is known to be finite, you may get better performance by
     /// calling the `format_finite` method instead of `format` to avoid the
@@ -1814,7 +2365,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
-            unsafe { crate::write(self, buffer) }
+            unsafe { crate::write(buffer, self) }
         }
     }
 
@@ -1843,7 +2394,7 @@ mod private {
 
         #[cfg_attr(feature = "no-panic", inline)]
         unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
-            unsafe { crate::write(self, buffer) }
+            unsafe { crate::write(buffer, self) }
         }
     }
 }

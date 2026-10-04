@@ -4,7 +4,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint;
 use std::io::Write;
 
-fn do_bench(c: &mut Criterion, group_name: &str, float: f64) {
+fn do_bench<Float>(c: &mut Criterion, group_name: &str, float: Float)
+where
+    Float: zmij::Float + ryu::Float + std::fmt::Display,
+{
     let mut group = c.benchmark_group(group_name);
     group.bench_function("zmij", |b| {
         let mut buf = zmij::Buffer::new();
@@ -40,6 +43,12 @@ fn bench(c: &mut Criterion) {
     do_bench(c, "f64[medium]", 0.123456789f64);
     do_bench(c, "f64[e]", std::f64::consts::E);
     do_bench(c, "f64[max]", f64::MAX);
+
+    do_bench(c, "f32[0]", 0f32);
+    do_bench(c, "f32[short]", 0.1234f32);
+    do_bench(c, "f32[medium]", 0.123456789f32);
+    do_bench(c, "f32[e]", std::f32::consts::E);
+    do_bench(c, "f32[max]", f32::MAX);
 }
 
 criterion_group!(benches, bench);

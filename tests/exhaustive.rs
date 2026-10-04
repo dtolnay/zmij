@@ -12,7 +12,7 @@ fn test_exhaustive() {
     let finished = Arc::new(AtomicU32::new(0));
 
     let mut workers = Vec::new();
-    for _ in 0..num_cpus::get() {
+    for _ in 0..std::thread::available_parallelism().unwrap().get() {
         let counter = counter.clone();
         let finished = finished.clone();
         workers.push(thread::spawn(move || loop {
@@ -35,7 +35,7 @@ fn test_exhaustive() {
                 if !f.is_finite() {
                     continue;
                 }
-                let zmij = zmij_buffer.format_finite(f);
+                let zmij = zmij_buffer.format(f);
                 assert_eq!(Ok(f), zmij.parse(), "{zmij:?}");
                 let ryu = ryu_buffer.format_finite(f);
                 let matches = if ryu.contains('e') && !ryu.contains("e-") {

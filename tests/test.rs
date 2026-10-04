@@ -55,6 +55,11 @@ mod dtoa_test {
     }
 
     #[test]
+    fn small_dec() {
+        assert_eq!(dtoa(1.1), "1.1");
+    }
+
+    #[test]
     fn zero() {
         assert_eq!(dtoa(0.0), "0.0");
         assert_eq!(dtoa(-0.0), "-0.0");
@@ -67,6 +72,7 @@ mod dtoa_test {
 
     #[test]
     fn nan() {
+        assert_eq!(dtoa(f64::NAN), "NaN");
         assert_eq!(dtoa(f64::NAN.copysign(-1.0)), "NaN");
     }
 
@@ -100,7 +106,7 @@ mod dtoa_test {
         for &bits in BOUNDARY_BITS {
             let value = f64::from_bits(bits);
             assert_eq!(
-                zmij.format_finite(value).replace("e+", "e"),
+                zmij.format(value).replace("e+", "e"),
                 ryu.format_finite(value),
                 "bits=0x{bits:016x}",
             );
@@ -123,6 +129,22 @@ mod dtoa_test {
 
 mod ftoa_test {
     use super::ftoa;
+
+    #[test]
+    fn small_int() {
+        assert_eq!(ftoa(1.0), "1.0");
+    }
+
+    #[test]
+    fn small_dec() {
+        assert_eq!(ftoa(1.1), "1.1");
+    }
+
+    #[test]
+    fn zero() {
+        assert_eq!(ftoa(0.0), "0.0");
+        assert_eq!(ftoa(-0.0), "-0.0");
+    }
 
     #[test]
     fn fixed_with_zeros() {
