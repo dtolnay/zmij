@@ -1702,6 +1702,76 @@ where
     }
 }
 
+/// Prints a floating point number into the given buffer and returns
+/// the number of bytes written.
+///
+/// # Special cases
+///
+/// This function formats NaN as the string "NaN", positive infinity as
+/// "inf", and negative infinity as "-inf" to match std::fmt.
+///
+/// If your input is known to be finite, you may get better performance by
+/// calling the [`format_finite_to`] function instead of `format_to` to
+/// avoid the checks for special cases.
+///
+/// # Safety
+///
+/// `buffer` must be valid to write 24 bytes. The bytes can be uninitialized.
+///
+/// # Example
+///
+/// ```
+/// let mut buffer = [0u8; 24];
+/// let len = unsafe { zmij::format_to(1.234, buffer.as_mut_ptr()) };
+/// assert_eq!(&buffer[..len], b"1.234");
+/// ```
+#[inline]
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub unsafe fn format_to<F: Float>(f: F, buffer: *mut u8) -> usize {
+    unsafe {
+        if f.is_nonfinite() {
+            let formatted = f.format_nonfinite();
+            ptr::copy_nonoverlapping(formatted.as_ptr(), buffer, formatted.len());
+            formatted.len()
+        } else {
+            f.write_to_zmij_buffer(buffer).offset_from(buffer) as usize
+        }
+    }
+}
+
+/// Prints a floating point number into the given buffer and returns
+/// the number of bytes written.
+///
+/// # Special cases
+///
+/// This function **does not** check for NaN or infinity. If the input
+/// number is not a finite float, the printed representation will be some
+/// correctly formatted but unspecified numerical value.
+///
+/// Please check [`is_finite`] yourself before calling this function, or
+/// check [`is_nan`] and [`is_infinite`] and handle those cases yourself.
+///
+/// [`is_finite`]: f64::is_finite
+/// [`is_nan`]: f64::is_nan
+/// [`is_infinite`]: f64::is_infinite
+///
+/// # Safety
+///
+/// `buffer` must be valid to write 24 bytes. The bytes can be uninitialized.
+///
+/// # Example
+///
+/// ```
+/// let mut buffer = [0u8; 24];
+/// let len = unsafe { zmij::format_finite_to(1.234, buffer.as_mut_ptr()) };
+/// assert_eq!(&buffer[..len], b"1.234");
+/// ```
+#[inline]
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub unsafe fn format_finite_to<F: Float>(f: F, buffer: *mut u8) -> usize {
+    unsafe { f.write_to_zmij_buffer(buffer).offset_from(buffer) as usize }
+}
+
 /// Safe API for formatting floating point numbers to text.
 ///
 /// ## Example
