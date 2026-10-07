@@ -148,3 +148,47 @@ mod ftoa_test {
         assert_eq!(ftoa(6.62607e-34), "6.62607e-34");
     }
 }
+
+mod raw_test {
+    use std::mem::MaybeUninit;
+    use std::slice;
+    use std::str;
+
+    fn raw<F: zmij::Float>(value: F) -> String {
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 24];
+        unsafe {
+            let len = zmij::raw::format_finite(value, buffer.as_mut_ptr().cast::<u8>());
+            let slice = slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), len);
+            str::from_utf8_unchecked(slice).to_owned()
+        }
+    }
+
+    fn dtoa_raw(value: f64) -> String {
+        raw(value)
+    }
+
+    fn ftoa_raw(value: f32) -> String {
+        zmij::Buffer::new().format(value).to_owned()
+    }
+
+    #[test]
+    fn normal() {
+        assert_eq!(dtoa_raw(6.62607015e-34f64), "6.62607015e-34");
+        assert_eq!(ftoa_raw(6.62607e-34f32), "6.62607e-34");
+    }
+
+    #[test]
+    fn longest() {
+        assert_eq!(
+            dtoa_raw(-1.2345678901234567e-308f64),
+            "-1.2345678901234567e-308"
+        );
+        assert_eq!(ftoa_raw(-1.1754944e-38f32), "-1.1754944e-38");
+    }
+
+    #[test]
+    fn zero() {
+        assert_eq!(dtoa_raw(0.0f64), "0.0");
+        assert_eq!(ftoa_raw(-0.0f32), "-0.0");
+    }
+}

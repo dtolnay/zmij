@@ -1771,6 +1771,60 @@ impl Buffer {
     }
 }
 
+/// Unsafe functions that write to a caller-provided pointer
+pub mod raw {
+    use crate::Float;
+    #[cfg(feature = "no-panic")]
+    use no_panic::no_panic;
+
+    /// Print f64 to the given buffer and return number of bytes written.
+    ///
+    /// At most 24 bytes will be written.
+    ///
+    /// ## Special cases
+    ///
+    /// This function **does not** check for NaN or infinity. If the input
+    /// number is not a finite float, the printed representation will be some
+    /// correctly formatted but unspecified numerical value.
+    ///
+    /// Please check [`is_finite`] yourself before calling this function, or
+    /// check [`is_nan`] and [`is_infinite`] and handle those cases yourself.
+    ///
+    /// [`is_finite`]: f64::is_finite
+    /// [`is_nan`]: f64::is_nan
+    /// [`is_infinite`]: f64::is_infinite
+    ///
+    /// ## Safety
+    ///
+    /// The `result` pointer argument must point to at least 24 writable bytes,
+    /// regardless of the length of the representation of `f`. Bytes past the
+    /// returned length may be overwritten with unspecified values.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use std::{mem::MaybeUninit, slice, str};
+    ///
+    /// let f = 1.234f64;
+    ///
+    /// unsafe {
+    ///     let mut buffer = [MaybeUninit::<u8>::uninit(); 24];
+    ///     let len = zmij::raw::format_finite(f, buffer.as_mut_ptr().cast::<u8>());
+    ///     let slice = slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), len);
+    ///     let print = str::from_utf8_unchecked(slice);
+    ///     assert_eq!(print, "1.234");
+    /// }
+    /// ```
+    #[must_use]
+    #[cfg_attr(feature = "no-panic", no_panic)]
+    pub unsafe fn format_finite<F: Float>(f: F, result: *mut u8) -> usize {
+        unsafe {
+            let end = f.write_to_zmij_buffer(result);
+            end.offset_from(result) as usize
+        }
+    }
+}
+
 /// A floating point number, f32 or f64, that can be written into a
 /// [`zmij::Buffer`][Buffer].
 ///
